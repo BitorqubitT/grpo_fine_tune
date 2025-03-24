@@ -142,7 +142,7 @@ def run_rust_tests(
 tools = [RustTool("build"), RustTool("clippy"), RustTool("test")]
 base_dir = Path("outputs") / "tests"
 
-results = run_rust_tests(
+rust_results = run_rust_tests(
     rustcode,
     tools,
     base_dir,
@@ -150,17 +150,21 @@ results = run_rust_tests(
     template_rs_file
 )
 
-rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'test_time': 0, 'result_output': ''} 
+def rust_rewards(results):
+    rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'test_time': 0, 'result_output': ''} 
 
-for tool_name, result in results.items():
-    if result.passed:
-        rust_tool_reward[tool_name] = 1
-    else:
-        rust_tool_reward[tool_name] = 0
-    if result.stderr:
-        rust_tool_reward['result_output'] = result.stderr
-    if result.stdout:
-        rust_tool_reward['test_time'] = result.execution_time
-        rust_tool_reward['result_output'] = result.stdout
+    for tool_name, result in results.items():
+        if result.passed:
+            rust_tool_reward[tool_name] = 1
+        else:
+            rust_tool_reward[tool_name] = 0
+        if result.stderr:
+            rust_tool_reward['result_output'] = result.stderr
+        if result.stdout:
+            rust_tool_reward['test_time'] = result.execution_time
+            rust_tool_reward['result_output'] = result.stdout
+    
+    return rust_tool_reward
 
-print(rust_tool_reward)
+all_rust_rewards = rust_rewards(rust_results)
+print(all_rust_rewards)
