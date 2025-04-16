@@ -1,17 +1,23 @@
 import torch
 import torch.optim as optim
+from torch.nn.functional import kl_div, log_softmax
+#CHECK TRAIN ARGS
+
+#https://github.com/Oxen-AI/GRPO-With-Cargo-Feedback/blob/main/train.py?ref=ghost.oxen.ai
 
 class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        self.reference_model = None #model
+        #self.reference_model = model.clone()
+        #self.reference_mode.eval()
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
         self.amount = amount_of_answers
         self.device = "cuda"
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
+        self.kl_clip = 0.1
 
     def get_action(self, prompt):
         # Do I only sample from the value model or also from reference model?
@@ -28,99 +34,124 @@ class GRPO_agent():
             tokenize=False,
             add_generation_prompt=True
         )
-        
+
+        single_encoded = self.tokenizer(text, return_tensors="pt")
+        prompt_length = single_encoded.input_ids.shape[1]  # length of the prompt
+        print("prompt_length:", prompt_length)
+
         model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
         #model_inputs = self.tokenizer(text, return_tensors="pt", padding=True).to(self.device)
 
-        generated_ids = self.model.generate(
+        # This is with the system prompt etc.
+        generated_full_ids = self.model.generate(
             model_inputs.input_ids,
             max_new_tokens=512,
             num_return_sequences= self.amount
-      
         )
 
         generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
+            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_full_ids)
         ]
 
         answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-        return answers
-
-    def sample_outputs(self, queries):
-        outputs = []
-        for query in queries:
-            inputs = self.tokenizer(query, return_tensors="pt").input_ids
-            samples = [
-                self.model.generate(inputs, max_length=100, do_sample=True) for _ in range(self.G)
-            ]
-            decoded_samples = [self.tokenizer.decode(s[0], skip_special_tokens=True) for s in samples]
-            outputs.append(decoded_samples)
-        return outputs
-
-    def compute_rewards(self, outputs, reward_fn):
-        return [[reward_fn(o) for o in group] for group in outputs]
-
-    def compute_advantages(self, rewards):
-        advantages = []
-        for group in rewards:
-            mean_reward = sum(group) / len(group)
-            advantages.append([r - mean_reward for r in group])
-        return advantages
-
-    def optimise_network(self, queries, outputs, advantages):
-        loss = 0
-        # Pretty sure we want
-        # get memory class
-        # Multiple epochs ???? not sure about this
-        # Calculate old and new logits to calc kl_loss
-        # Update model
-        # Do we put these back in memory so we can iterate over them a few times?
-
-        # Update ref ever?
-
-        # Get from memory
-        #input = dataset.sample()
-        #outputs = self.sample_outputs(batch)
-        #rewards = self.compute_rewards(outputs, reward_fn)
-        #advantages = self.compute_advantages(rewards)
         
-        obs, actions, logprobs, rewards = self.memory.get_values()
+        #calc logits for input+ output
+        logits = self.model(input_ids=generated_full_ids, return_dict=True).logits
+        return answers, logits, generated_full_ids, prompt_length
+    
+    # TODO: CHECK THIS
+    def optimise_network(self, queries):
+        prompts, actions, logprobs, advantages = self.memory.get_values()
+        total_loss = 0
+        num_steps = 5  # Make this configurable
 
-        for i in range(0, 5):
-            ref_logits = self.reference_model(input)
-            ref_output = self.get_model(input)
+        #TODO: Keep recalcuating advantage is too expensive.
+        #TODO: Can always check effect of this
 
-            kl_loss = kl_div(log_softmax(logits, dim=-1),
-                             log_softmax(ref_logits, dim=-1),
-                             reduction="batchmean"
+        for _ in range(num_steps):
+            #TODO: Find easy way to calculate logprobs for new model
+            new_logprobs = get_logprobs(current_model, prompts, actions)
+            ratio = (new_logprobs - logprobs).exp()  # shape: [B, T]
+            loss = -torch.mean(ratio * advantages)
+
+
+            # Calculate KL divergence
+            #TODO: With logits or logprob?
+            kl_loss = kl_div(
+                log_softmax(current_logits, dim=-1),
+                log_softmax(ref_logits, dim=-1),
+                reduction="batchmean"
             )
-
-            kl_loss = torch.clamp(kl_loss, max=self.kl_clip)
-            # Do we use old advantage?
-            loss += -(advantage * kl_loss).mean()
-
+            
+            # Clip KL divergence
+            clipped_kl = torch.clamp(kl_loss, max=self.kl_clip)
+            
+            # Calculate policy loss with advantages
+            policy_loss = -(advantages * clipped_kl).mean()
+            
+            total_loss += policy_loss
+            
+            # Optional: Add entropy bonus for exploration
+            # entropy_loss = self.entropy_coefficient * entropy
+            # total_loss += entropy_loss
+        
+        # Optimize
         self.optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         self.optimizer.step()
+
+
+
+
+        """
+Each sample is one response generated by the policy for a prompt.
+
+prompt_input_ids: tokenized input IDs of the prompt.
+
+response_input_ids: tokenized output IDs of the response.
+
+log_prob: log probability of the response under the current policy (used in GRPO loss).
+
+reward: scalar reward assigned to this response.
+
+group_id: an identifier to group responses by prompt (3 responses per prompt = 1 group).        
+
+
+        """
 
 class Memory():
     """ 
         Class that holds memory for ppoagent
     """
-    def __init__(self, num_steps: int, num_envs: int, device: torch.device):
-        self.obs = torch.zeros((num_steps, num_envs) + (9,)).to(device)
-        self.actions = torch.zeros((num_steps, num_envs) + ()).to(device)
-        self.logprobs = torch.zeros((num_steps, num_envs)).to(device)
-        self.rewards = torch.zeros((num_steps, num_envs)).to(device)
+    def __init__(self, num_steps: int, num_envs: int, device: torch.device, logits_shape):
+        #self.obs = torch.zeros((num_steps, num_envs) + (9,)).to(device)
+        #self.obs = torch.zeros((num_steps, num_envs) + (9,)).to(device)
+        self.device = device
+        self.num_envs = num_envs
+        self.num_steps = num_steps
+        self.obs = []
+        #self.actions = torch.zeros((num_steps, num_envs) + (9,)).to(device)
+        self.actions = []
+        #self.logprobs = torch.zeros((num_steps, logits_shape[1], logits_shape[2])).to(self.device)
+        self.rewards = torch.zeros((num_steps, num_envs)).to(self.device)
+        self.advantages = torch.zeros((num_steps, num_envs)).to(self.device)
         #TODO: add advantage, attention mask, kl?
 
-
-    def update_values(self, step: int, obs, actions, logprobs, rewards):
-        self.obs[step] = obs
-        self.actions[step] = actions
-        self.logprobs[step] = logprobs
+    def update_values(self, step: int, obs, actions, logprobs, rewards, advantages):
+        #self.obs[step] = obs
+        self.obs.append(obs)
+        #self.actions[step] = actions
+        self.actions.append(actions)
+        #self.logprobs[step] = logprobs
         self.rewards[step] = rewards
-
+        self.advantages[step] = advantages
     
     def get_values(self):
-        return self.obs, self.actions, self.logprobs, self.rewards
+        return self.obs, self.actions, self.logprobs, self.rewards, self.advantages
+    
+    def clear(self, logits_shape=None):
+        self.obs = []
+        self.actions = []
+        #self.logprobs = torch.zeros((self.num_steps, logits_shape[1], logits_shape[2])).to(self.device)
+        self.rewards = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
+        self.advantages = torch.zeros((self.num_steps, self.num_envs)).to(self.device)
