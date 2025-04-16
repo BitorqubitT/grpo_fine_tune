@@ -3,8 +3,6 @@ import torch.optim as optim
 from torch.nn.functional import kl_div, log_softmax
 #CHECK TRAIN ARGS
 
-#https://github.com/Oxen-AI/GRPO-With-Cargo-Feedback/blob/main/train.py?ref=ghost.oxen.ai
-
 class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
@@ -40,9 +38,7 @@ class GRPO_agent():
         print("prompt_length:", prompt_length)
 
         model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
-        #model_inputs = self.tokenizer(text, return_tensors="pt", padding=True).to(self.device)
 
-        # This is with the system prompt etc.
         generated_full_ids = self.model.generate(
             model_inputs.input_ids,
             max_new_tokens=512,
@@ -55,9 +51,7 @@ class GRPO_agent():
 
         answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         
-        #calc logits for input+ output
-        logits = self.model(input_ids=generated_full_ids, return_dict=True).logits
-        return answers, logits, generated_full_ids, prompt_length
+        return answers
     
     # TODO: CHECK THIS
     def optimise_network(self, queries):
@@ -73,7 +67,6 @@ class GRPO_agent():
             new_logprobs = get_logprobs(current_model, prompts, actions)
             ratio = (new_logprobs - logprobs).exp()  # shape: [B, T]
             loss = -torch.mean(ratio * advantages)
-
 
             # Calculate KL divergence
             #TODO: With logits or logprob?
