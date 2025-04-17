@@ -1,5 +1,8 @@
 import re
 from typing import Optional
+import torch
+import numpy as np
+import wandb
 
 rustcode = '''```rust
 fn sort_list(mut list: Vec<i32>) -> Vec<i32> {
@@ -84,3 +87,41 @@ def get_rewards(code: str):
         total_reward["test block"] = 1
     total_reward["asserts"] = response_contains_asserts(code)
     return total_reward
+
+def calc_advantages(rewards:list) -> torch.Tensor:
+    rewards = torch.tensor(rewards)
+    mean_r = rewards.mean()
+    std_r = rewards.std(unbiased=False)
+    
+    if std_r < 1e-8:
+        return torch.zeros_like(rewards)
+    
+    advantages = (rewards - mean_r) / std_r
+    return advantages
+
+
+def process_batch_rewards(batch_rewards, prompt, actions, rewards_keys):
+    """Process rewards in batches for better efficiency"""
+    rows = []
+    total_rewards = []
+
+    for i, rewards in enumerate(batch_rewards):
+        total_reward = sum(rewards[key] for key in rewards_keys)
+        total_rewards.append(total_reward)
+        
+        # Create a single row with all required columns
+        row = [
+            prompt,                     # question
+            actions[i],                 # generated_code
+            total_reward,              # total_rewards
+            rewards['test block'],      # test_block
+            rewards['asserts'],         # asserts
+        ]
+        rows.append(row)
+
+    # Batch log to wandb
+    wandb.log({
+        "total_reward": np.mean(total_rewards),
+    })
+    
+    return rows, total_rewards
