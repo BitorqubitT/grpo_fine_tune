@@ -41,7 +41,7 @@ class env():
 
     def _rust_rewards(self, results):
         rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'test_time': 0, 'result_output': ''} 
-
+        print(results)
         for tool_name, result in results.items():
             if result.passed:
                 rust_tool_reward[tool_name] = 1

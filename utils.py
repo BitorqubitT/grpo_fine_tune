@@ -99,9 +99,15 @@ def calc_advantages(rewards:list) -> torch.Tensor:
     advantages = (rewards - mean_r) / std_r
     return advantages
 
-
-def process_batch_rewards(batch_rewards, prompt, actions, rewards_keys):
+def process_batch_rewards(batch_rewards, prompt, actions):
     """Process rewards in batches for better efficiency"""
+    rewards_keys = ['not empty',
+                'code block', 
+                'test block', 
+                'asserts', 
+                'build', 
+                'clippy', 
+                'test']
     rows = []
     total_rewards = []
 
@@ -119,9 +125,4 @@ def process_batch_rewards(batch_rewards, prompt, actions, rewards_keys):
         ]
         rows.append(row)
 
-    # Batch log to wandb
-    wandb.log({
-        "total_reward": np.mean(total_rewards),
-    })
-    
     return rows, total_rewards

@@ -79,7 +79,6 @@ edition = "2021"
 """
 
 x = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3)
-model = ""
 env = env(cargo_toml_file, template_rs_file)
 #memory = Memory(3, 1, device)
 
@@ -98,30 +97,7 @@ columns = ['question',
 ]
 
 test_table = wandb.Table(columns = columns)
-
 memory = Memory(3, 1, device, (3, 4, 2))
-
-"""
-def get_per_token_logps(logits, input_ids):
-    per_token_logps = [] # Use a loop to reduce memory peak.
-    for logits_row, input_ids_row in zip(logits, input_ids):
-        log_probs = logits_row.log_softmax(dim=-1)
-        token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
-        per_token_logps.append(token_log_prob)
-    return torch.stack(per_token_logps)
-
- # Check how to optimise this
-def get_logprobs(logits, prompt, prompt_length):
-    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-    #TODO: With the input should I include the system prompt aswell?
-    #TODO: Should the prompt just be the prompt or maybe tokenized?
-    input_ids = prompt[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it 
-    per_token_logps = get_per_token_logps(logits, input_ids)
-    # We remove the tokens from the prompt.
-    per_token_logps = per_token_logps[:,prompt_length-1:]
-    return per_token_logps
-
-"""
 
 def get_per_token_logps(logits, input_ids):
     per_token_logps = []
@@ -132,8 +108,9 @@ def get_per_token_logps(logits, input_ids):
     return torch.stack(per_token_logps)
 
 
-def get_logprobs(model, prompts, actions, prompt_lengths):
+def get_logprobs(model, prompts, prompt_lengths):
     with torch.no_grad():
+        # Are these logprobs 100% the same as when we give prompt to the model?
         outputs = model(input_ids=prompts, return_dict=True)
         logits = outputs.logits[:, :-1, :]
         input_ids = prompts[:, 1:]
@@ -170,12 +147,17 @@ for _ in range(1):
         # TODO: Split this into two functions, one for the rewards and one for the table rows.
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
 
+        wandb.log({
+        "total_reward": np.mean(total_rewards),
+        })
+    
         for row in table_rows:
             test_table.add_data(*row)
 
         with torch.no_grad():
-            
-            logprobs = get_logprobs(logits, generated_ids, prompt_length)
+            # TODO: How do we get prompt_length?
+            # We only use the prompt length to iterate over the logprobs
+            logprobs = get_logprobs(model, prompt, prompt_length)
             advantages = calc_advantages(total_rewards)
 
         #memory.update_values(i, prompt, logits[i], advantages)
