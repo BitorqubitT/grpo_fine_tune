@@ -89,7 +89,7 @@ def get_rewards(code: str):
     return total_reward
 
 def calc_advantages(rewards:list) -> torch.Tensor:
-    rewards = torch.tensor(rewards)
+    rewards = torch.tensor(rewards).to('cuda')
     mean_r = rewards.mean()
     std_r = rewards.std(unbiased=False)
     

@@ -1,6 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
 import datasets
+import torch.nn.functional as F
 from grpo_agent import GRPO_agent
 from grpo_agent import Memory
 from utils import get_rewards, calc_advantages, process_batch_rewards
@@ -78,16 +79,13 @@ edition = "2021"
 [dependencies]
 """
 
-x = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3)
-env = env(cargo_toml_file, template_rs_file)
-#memory = Memory(3, 1, device)
 
-wandb.init(project = "llm finetune",
-           name = f"experiment 9424",
-           config = {
-                    "gamma": 5,
-                    }
-            )
+#wandb.init(project = "llm finetune",
+#           name = f"experiment 9424",
+#           config = {
+#                    "gamma": 5,
+#                    }
+#            )
 
 columns = ['question',
            'generated_code',
@@ -98,36 +96,40 @@ columns = ['question',
 
 test_table = wandb.Table(columns = columns)
 memory = Memory(3, 1, device, (3, 4, 2))
+x = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
+env = env(cargo_toml_file, template_rs_file)
 
-def get_per_token_logps(logits, input_ids):
-    per_token_logps = []
-    for logits_row, input_ids_row in zip(logits, input_ids):
-        log_probs = logits_row.log_softmax(dim=-1)
-        token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
-        per_token_logps.append(token_log_prob)
-    return torch.stack(per_token_logps)
+def get_logprobs(model, prompts, actions) -> torch.Tensor:
+    """
+    Compute logprobs for the generated actions, given prompts.
+    Assumes prompts and actions are both [B, T] padded sequences.
+    We still need the prompts, Because they are used for predicint the actions.
+    """
+    all_logprobs = []
 
+    for prompt_ids, action_ids in zip(prompts, actions):
+        # Combine prompt + action
+        input_ids = torch.cat([prompt_ids, action_ids], dim=0).unsqueeze(0).to(model.device)
 
-def get_logprobs(model, prompts, prompt_lengths):
-    with torch.no_grad():
-        # Are these logprobs 100% the same as when we give prompt to the model?
-        outputs = model(input_ids=prompts, return_dict=True)
-        logits = outputs.logits[:, :-1, :]
-        input_ids = prompts[:, 1:]
+        with torch.no_grad():
+            outputs = model(input_ids, return_dict=True)
+            logits = outputs.logits  # [1, seq_len, vocab]
 
-    logprobs = get_per_token_logps(logits, input_ids)
+        # We want logprobs over the actions only
+        response_start = prompt_ids.shape[0]
+        shift_logits = logits[:, response_start - 1:-1, :]  # Predict action tokens
+        shift_labels = action_ids.unsqueeze(0)
 
-    # Trim to just the action portion (i.e., remove prompt logprobs)
-    trimmed_logprobs = []
-    for lp_row, pl in zip(logprobs, prompt_lengths):
-        trimmed_logprobs.append(lp_row[pl-1:])  # pl-1 because we dropped the first token
-    return torch.stack(trimmed_logprobs)
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_logprobs = torch.gather(log_probs, 2, shift_labels.unsqueeze(-1)).squeeze(-1)  # [1, action_len]
 
+        total_logprob = token_logprobs.sum(dim=-1)  # [1]
+        all_logprobs.append(total_logprob.item())
+    return torch.Tensor(all_logprobs)
 
 #TODO: Use the new get_logprobs function to get logprob
 # It doesnt use more resources than calculating it right after the model call for the query.
 # We giuve model, prompt, action, prompt length to retrieve it
-
 
 # Should be epochs
 for _ in range(1):
@@ -136,34 +138,26 @@ for _ in range(1):
             break
 
         prompt = batch["rust_prompt"][0]
-        print(k)
-        
-        #action, logits, generated_ids, prompt_length = x.get_action(prompt)
-        action = x.get_action(prompt)
+        action, prompt_id, generated_full_ids, generated_ids = x.get_action(prompt)
         
         batch_rewards = env.step(action)
-        #memory.clear(logits.shape)
  
-        # TODO: Split this into two functions, one for the rewards and one for the table rows.
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
 
-        wandb.log({
-        "total_reward": np.mean(total_rewards),
-        })
-    
+        #wandb.log({
+        #"total_reward": np.mean(total_rewards),
+        #})
+     
         for row in table_rows:
             test_table.add_data(*row)
 
         with torch.no_grad():
-            # TODO: How do we get prompt_length?
-            # We only use the prompt length to iterate over the logprobs
-            logprobs = get_logprobs(model, prompt, prompt_length)
+            logprobs = get_logprobs(model, prompt_id, generated_ids)
             advantages = calc_advantages(total_rewards)
-
-        #memory.update_values(i, prompt, logits[i], advantages)
-
-        #x.optimise_network()
+        
+        memory.update_values(prompt_id, generated_ids, logprobs, advantages)
+        x.optimise_network()
         # Copy to ref model
 
-    wandb.log({"test_table": test_table})
-    wandb.finish()
+    #wandb.log({"test_table": test_table})
+    #wandb.finish() 
