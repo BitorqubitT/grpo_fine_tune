@@ -91,12 +91,17 @@ if __name__ == "__main__":
 
     device = "cuda" # the device to load the model onto
 
+    model_name = "Qwen/Qwen2-1.5B-Instruct"
+    #model_name = "Qwen/Qwen3-1.7B"
+    #model_name = "Qwen/Qwen3-0.6b"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
     model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2-1.5B-Instruct",
-        torch_dtype="auto",
-        device_map="auto"
+    model_name,
+    torch_dtype="auto",
+    device_map="auto"
     )
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-1.5B-Instruct")
 
     #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
     df = pd.read_parquet("data/cargo_test_passed_train.parquet")

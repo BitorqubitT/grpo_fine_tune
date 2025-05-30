@@ -5,6 +5,8 @@ from pathlib import Path
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+import os
+import glob
 
 template_rs_file = """
 #![allow(dead_code)]
@@ -138,8 +140,12 @@ def run_rust_tests(
     
     project_dir = setup_rust_project(base_dir, cargo_toml, template_rs, rust_code)
     if not project_dir:
+        #TODO: change directory path
+        directory_path = r"C:\Users\thier\Programming\Python\Fine Tune with GRPO\outputs\tests"
+        files = glob.glob(os.path.join(directory_path, "*"))
+        for file in files:
+            os.remove(file)
         return results
-
     try:
         for tool in tools:
             result = tool.run(project_dir)

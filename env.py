@@ -41,7 +41,6 @@ class env():
 
     def _rust_rewards(self, results):
         rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'test_time': 0, 'result_output': ''} 
-        print(results)
         for tool_name, result in results.items():
             if result.passed:
                 rust_tool_reward[tool_name] = 1
@@ -100,11 +99,9 @@ class env():
             for tool in tools:
                 result = tool.run(project_dir)
                 results[tool.name] = result
-                
                 #if not result.passed:
                     #logger.warning(f"{tool.name} failed: {result.stderr}")
         finally:
-            # Clean up
             if project_dir.exists():
                 shutil.rmtree(project_dir)
         return results

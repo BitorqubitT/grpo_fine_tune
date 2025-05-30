@@ -3,6 +3,8 @@ from typing import Optional
 import torch
 import numpy as np
 import wandb
+import torch.nn.functional as F
+from transformers import AutoTokenizer
 
 rustcode = '''```rust
 fn sort_list(mut list: Vec<i32>) -> Vec<i32> {
@@ -126,3 +128,48 @@ def process_batch_rewards(batch_rewards, prompt, actions):
         rows.append(row)
 
     return rows, total_rewards
+
+# batched
+def get_logprobs(model, prompts, actions, tokenizer, use_no_grad = True) -> torch.Tensor:
+    """
+    Compute logprobs for the generated actions, given prompts.
+    Assumes prompts and actions are both [B, T] padded sequences.
+    We still need the prompts, Because they are used for predicint the actions.
+    """
+    batch_input_ids = []
+    prompt_lengths = []
+
+    for prompt_ids, action_ids in zip(prompts, actions):
+        input_ids = torch.cat([prompt_ids, action_ids], dim=0)
+        prompt_lengths.append(len(prompt_ids))
+        batch_input_ids.append(input_ids)
+
+    batch_input_ids = torch.nn.utils.rnn.pad_sequence(
+        batch_input_ids, 
+        batch_first=True, 
+        padding_value=tokenizer.pad_token_id
+    ).to("cuda")
+
+    # Create attention mask: 1 for non-pad tokens, 0 for pad
+    attention_mask = (batch_input_ids != tokenizer.pad_token_id).long()
+
+    if use_no_grad:
+        with torch.no_grad():
+            outputs = model(batch_input_ids, attention_mask=attention_mask, return_dict=True)
+    else:
+        outputs = model(batch_input_ids, attention_mask=attention_mask, return_dict=True)
+
+    logits = outputs.logits  # [B, T, V]
+
+    all_logprobs = []
+
+    for i, (prompt_len, action_ids) in enumerate(zip(prompt_lengths, actions)):
+        shift_logits = logits[i, prompt_len - 1:-1, :]
+        shift_labels = action_ids
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_logprobs = torch.gather(log_probs, 1, shift_labels.unsqueeze(-1)).squeeze(-1)
+        total_logprob = token_logprobs.sum()
+        all_logprobs.append(total_logprob)
+
+    return torch.stack(all_logprobs, dim=0)

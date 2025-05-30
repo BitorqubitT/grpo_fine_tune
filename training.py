@@ -10,15 +10,25 @@ import wandb
 import pandas as pd
 import numpy as np
 import torch
-
+from utils import get_logprobs
+import os
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 device = "cuda" # the device to load the model onto
+model_name = "Qwen/Qwen3-0.6b"
+#model_name = "Qwen/Qwen3-1.8b"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
 model = AutoModelForCausalLM.from_pretrained(
-    "Qwen/Qwen2-1.5B-Instruct",
+    model_name,
     torch_dtype="auto",
     device_map="auto"
 )
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-1.5B-Instruct")
+
+# Models are misaligned on purpose.
+print("Tokenizer vocab size:", tokenizer.vocab_size)
+print("Model embedding size:", model.get_input_embeddings().num_embeddings)
 
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
 df = pd.read_parquet("data/cargo_test_passed_train.parquet")
@@ -79,7 +89,6 @@ edition = "2021"
 [dependencies]
 """
 
-
 #wandb.init(project = "llm finetune",
 #           name = f"experiment 9424",
 #           config = {
@@ -94,38 +103,11 @@ columns = ['question',
            'asserts'
 ]
 
-test_table = wandb.Table(columns = columns)
+#test_table = wandb.Table(columns = columns)
 memory = Memory(3, 1, device, (3, 4, 2))
 x = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
 env = env(cargo_toml_file, template_rs_file)
 
-def get_logprobs(model, prompts, actions) -> torch.Tensor:
-    """
-    Compute logprobs for the generated actions, given prompts.
-    Assumes prompts and actions are both [B, T] padded sequences.
-    We still need the prompts, Because they are used for predicint the actions.
-    """
-    all_logprobs = []
-
-    for prompt_ids, action_ids in zip(prompts, actions):
-        # Combine prompt + action
-        input_ids = torch.cat([prompt_ids, action_ids], dim=0).unsqueeze(0).to(model.device)
-
-        with torch.no_grad():
-            outputs = model(input_ids, return_dict=True)
-            logits = outputs.logits  # [1, seq_len, vocab]
-
-        # We want logprobs over the actions only
-        response_start = prompt_ids.shape[0]
-        shift_logits = logits[:, response_start - 1:-1, :]  # Predict action tokens
-        shift_labels = action_ids.unsqueeze(0)
-
-        log_probs = F.log_softmax(shift_logits, dim=-1)
-        token_logprobs = torch.gather(log_probs, 2, shift_labels.unsqueeze(-1)).squeeze(-1)  # [1, action_len]
-
-        total_logprob = token_logprobs.sum(dim=-1)  # [1]
-        all_logprobs.append(total_logprob.item())
-    return torch.Tensor(all_logprobs)
 
 #TODO: Use the new get_logprobs function to get logprob
 # It doesnt use more resources than calculating it right after the model call for the query.
@@ -134,9 +116,9 @@ def get_logprobs(model, prompts, actions) -> torch.Tensor:
 # Should be epochs
 for _ in range(1):
     for k, batch in enumerate(data_loader):
-        if k == 3:
+        if k == 55:
             break
-
+        print("################################################")
         prompt = batch["rust_prompt"][0]
         action, prompt_id, generated_full_ids, generated_ids = x.get_action(prompt)
         
@@ -148,16 +130,34 @@ for _ in range(1):
         #"total_reward": np.mean(total_rewards),
         #})
      
-        for row in table_rows:
-            test_table.add_data(*row)
-
-        with torch.no_grad():
-            logprobs = get_logprobs(model, prompt_id, generated_ids)
-            advantages = calc_advantages(total_rewards)
+        #answers:  human-readable text (useful for logging or reward computation)
+        #model_inputs.input_ids: prompt
+        #generated_ids: what the model did aka answer
+        #generated_full_ids: full sequence, useful for recovering the original generation context
         
+        #for row in table_rows:
+           # test_table.add_data(*row)
+
+        #TODO: CHECK, I think we somehow reload the model with get_logprobs
+
+        print("total_rewards", total_rewards)
+        advantages = calc_advantages(total_rewards)
+        threshold = 1e-3
+        if advantages.abs().max().item() < threshold:
+            print("All samples have low advantage, skipping this step.")
+            print("advantages", advantages)
+            memory.clear()
+            continue  # Skip memory update and optimization
+        
+        logprobs = get_logprobs(model, prompt_id, generated_ids, tokenizer, use_no_grad=True)
+
+        print("advantages", advantages)
         memory.update_values(prompt_id, generated_ids, logprobs, advantages)
         x.optimise_network()
         # Copy to ref model
+        memory.clear()
+
+
 
     #wandb.log({"test_table": test_table})
     #wandb.finish() 

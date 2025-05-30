@@ -1,6 +1,8 @@
 import torch
 import torch.optim as optim
 from torch.nn.functional import kl_div, log_softmax
+from utils import get_logprobs
+import gc
 
 class GRPO_agent():
 
@@ -17,9 +19,9 @@ class GRPO_agent():
         self.kl_clip = 0.1
         self.clip_eps = 0.2   #Used in deepseek
         self.kl_coef = 0.1 #Used in deepseek
-        self.num_steps = 5
+        self.num_steps = 3
 
-    def get_action(self, prompt):
+    def get_action2 (self, prompt):
         # More effictient way of getting value + better naming?
         messages = [
             {"role": "system", "content": self.chat_template},
@@ -35,8 +37,14 @@ class GRPO_agent():
         model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
         prompt_lengths = [input_ids.shape[0] for input_ids in model_inputs.input_ids]
         
+        # The attention mask is not set and cannot be inferred from input because pad token is same as eos token.
+        # Do this or error galooooreeeeeeeeeeeeeeeee
+        attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
+        
+        print(model_inputs)
         generated_full_ids = self.model.generate(
             model_inputs.input_ids,
+            attention_mask=attention_mask,
             max_new_tokens=512,
             num_return_sequences= self.amount
         )
@@ -51,11 +59,53 @@ class GRPO_agent():
         """
         answers:  human-readable text (useful for logging or reward computation)
         model_inputs.input_ids: prompt
-        generated_ids: what the model did
+        generated_ids: what the model did aka answer
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
         return answers, model_inputs.input_ids, generated_full_ids, generated_ids
     
+
+    def get_action(self, prompt):
+        messages = [
+            {"role": "system", "content": self.chat_template},
+            {"role": "user", "content": prompt}
+        ]
+
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
+        
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
+        attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
+        prompt_lengths = attention_mask.sum(dim=1).tolist()
+
+        generated_full_ids = self.model.generate(
+            model_inputs.input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=512,
+            #do_sample=True,
+            #top_k=50,
+            #top_p=0.95,
+            #temperature=1.0,
+            num_return_sequences=self.amount
+        )
+
+        generated_ids = [
+            output_ids[prompt_len:]
+            for output_ids, prompt_len in zip(generated_full_ids, prompt_lengths)
+        ]
+
+        answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+        return answers, model_inputs.input_ids, generated_full_ids, generated_ids
+
+
+
     # TODO: CHECK THIS
     def optimise_network(self):
         # We dont want the raw prompt, we want the input_ids
@@ -63,33 +113,37 @@ class GRPO_agent():
         input_ids, actions, old_logprobs, advantages = self.memory.get_values()
         total_loss = 0.0
 
-        # TODO: we have multiple actions we flatten the batch?
-        # TODO: Think about data types and shapes. Make them as consistent as possible
         if isinstance(actions, list):
             actions = torch.stack(actions, dim=0)
         if isinstance(old_logprobs, list):
             old_logprobs = torch.cat(old_logprobs, dim=0).to(self.device) # [batch_size, seq_len]
 
         for _ in range(self.num_steps):
-            print("steppppppppppp")
-            outputs = self.model(input_ids, return_dict=True)
-            logits = outputs.logits
+            # Should i use new or old model here?
 
+            new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
+            
             # We currently use total logprobs, so for the whole sequence.
             # Look at advanatage of doing it per token
-            logprobs = torch.nn.functional.log_softmax(logits, dim=-1).to(self.device)
-            action_logprobs = torch.gather(logprobs, 2, actions.unsqueeze(-1)).squeeze(-1)  # [B, T]
 
-            total_action_logprobs = action_logprobs.sum(dim=-1)  # [B]
+            #Values are toooooo big 
+            #Lets use logspace operatoins:
+            #ratio = torch.exp(new_logprobs - old_logprobs)
+            ratio_log = new_logprobs - old_logprobs
+            ratio = torch.exp(torch.clamp(ratio_log, -10, 10))
 
-            # Compute importance sampling ratio
-            ratio = torch.exp(total_action_logprobs - old_logprobs)
-
+            print("new_logprobs", new_logprobs)
+            print("old_logprobs", old_logprobs)
+            print("ratio", ratio)
             # PPO-style clipped loss
             clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
             loss_unclipped = ratio * advantages
             loss_clipped = clipped_ratio * advantages
             policy_loss = -torch.mean(torch.min(loss_unclipped, loss_clipped))
+
+            #TODO: Put in ref mode
+            # ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+            
 
             #with torch.no_grad():
             #    ref_outputs = self.ref_model(input_ids=input_ids)
@@ -104,11 +158,16 @@ class GRPO_agent():
             #)
             #kl_loss = torch.clamp(kl, max=self.kl_clip)
             # Combine losses if using KL penalty
-            total_loss += policy_loss + self.kl_coef * 1
-
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        self.optimizer.step()
+            #print("policy_loss.requires_grad:", policy_loss.requires_grad)
+            total_loss = policy_loss
+            #total_loss + policy_loss + self.kl_coef * 1
+            print("total_loss", total_loss)
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            self.optimizer.step() 
+            del new_logprobs
+            gc.collect()
+            torch.cuda.empty_cache()
 
 
 """
