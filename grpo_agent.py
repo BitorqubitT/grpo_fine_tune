@@ -8,8 +8,8 @@ class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        #self.reference_model = model.clone()
-        #self.reference_mode.eval()
+        self.reference_model = model.clone()
+        self.reference_mode.eval()
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -21,40 +21,7 @@ class GRPO_agent():
         self.kl_coef = 0.1 #Used in deepseek
         self.num_steps = 3
 
-    def get_action2 (self, prompt):
-        # More effictient way of getting value + better naming?
-        messages = [
-            {"role": "system", "content": self.chat_template},
-            {"role": "user", "content": prompt}
-        ]
-
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-        model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
-        prompt_lengths = [input_ids.shape[0] for input_ids in model_inputs.input_ids]
-        
-        # The attention mask is not set and cannot be inferred from input because pad token is same as eos token.
-        # Do this or error galooooreeeeeeeeeeeeeeeee
-        attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
-        
-        print(model_inputs)
-        generated_full_ids = self.model.generate(
-            model_inputs.input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=512,
-            num_return_sequences= self.amount
-        )
-
-        generated_ids = [
-            output_ids[prompt_len:]
-            for output_ids, prompt_len in zip(generated_full_ids, prompt_lengths)
-        ]
-
-        answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    def get_action(self, prompt) -> tuple:
 
         """
         answers:  human-readable text (useful for logging or reward computation)
@@ -62,10 +29,7 @@ class GRPO_agent():
         generated_ids: what the model did aka answer
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
-        return answers, model_inputs.input_ids, generated_full_ids, generated_ids
-    
 
-    def get_action(self, prompt):
         messages = [
             {"role": "system", "content": self.chat_template},
             {"role": "user", "content": prompt}
@@ -104,9 +68,6 @@ class GRPO_agent():
 
         return answers, model_inputs.input_ids, generated_full_ids, generated_ids
 
-
-
-    # TODO: CHECK THIS
     def optimise_network(self):
         # We dont want the raw prompt, we want the input_ids
         # And actions are the models answers
@@ -142,30 +103,22 @@ class GRPO_agent():
             policy_loss = -torch.mean(torch.min(loss_unclipped, loss_clipped))
 
             #TODO: Put in ref mode
-            # ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+            ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
             
 
-            #with torch.no_grad():
-            #    ref_outputs = self.ref_model(input_ids=input_ids)
-            #    ref_logits = ref_outputs.logits
-            #    ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
+            kl_div = ref_logprobs - new_logprobs
+            kl_loss = torch.mean(torch.clamp(kl_div, max=self.kl_clip))
+            total_loss = policy_loss + self.kl_coef * kl_loss
+            print("policy_loss:", policy_loss.item())
+            print("kl_loss:", kl_loss.item())
+            print("total_loss:", total_loss.item())
 
-            #kl = torch.nn.functional.kl_div(
-            #    input=logprobs,
-            #    target=ref_logprobs,
-            #    reduction="batchmean",
-            #    log_target=True,
-            #)
-            #kl_loss = torch.clamp(kl, max=self.kl_clip)
-            # Combine losses if using KL penalty
-            #print("policy_loss.requires_grad:", policy_loss.requires_grad)
-            total_loss = policy_loss
-            #total_loss + policy_loss + self.kl_coef * 1
-            print("total_loss", total_loss)
             self.optimizer.zero_grad()
             total_loss.backward()
             self.optimizer.step() 
-            del new_logprobs
+
+            #TODO: chekc these
+            del new_logprobs, ref_logprobs, ratio, clipped_ratio, policy_loss, kl_loss, total_loss
             gc.collect()
             torch.cuda.empty_cache()
 
@@ -179,6 +132,7 @@ reward: scalar reward assigned to this response.
 group_id: an identifier to group responses by prompt (3 responses per prompt = 1 group).        
 """
 
+#TODO: Optimise this code, now i just overwrite the memory
 class Memory():
     """ 
         Class that holds memory for ppoagent
@@ -199,7 +153,7 @@ class Memory():
         self.logprobs.append(logprobs)
         self.advantages = advantages
     
-    def get_values(self):
+    def get_values(self) -> tuple:
         return self.input_ids, self.actions, self.logprobs, self.advantages
     
     def clear(self):
