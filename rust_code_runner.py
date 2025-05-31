@@ -8,6 +8,8 @@ from typing import Dict, List, Optional
 import os
 import glob
 
+# Testing the rust code runner
+
 template_rs_file = """
 #![allow(dead_code)]
 // {code}
@@ -175,8 +177,5 @@ def rust_rewards(results):
     
     return rust_tool_reward
 
-
-rust_results = run_rust_tests(rustcode, cargo_toml_file, template_rs_file)
-
-all_rust_rewards = rust_rewards(rust_results)
-#print(all_rust_rewards)
+#rust_results = run_rust_tests(rustcode, cargo_toml_file, template_rs_file)
+#all_rust_rewards = rust_rewards(rust_results)
