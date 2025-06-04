@@ -152,7 +152,6 @@ class env():
         
         return len(unique_asserts) / total_asserts
 
-
 @dataclass
 class RustToolResult:
     passed: bool
