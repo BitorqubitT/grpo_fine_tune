@@ -19,7 +19,7 @@ class Memory:
         self.buffer.append({
             "input_ids": input_ids.detach().cpu(),
             "actions": actions.detach().cpu(),
-            "advantage": torch.tensor(advantage, dtype=torch.float32),
+            "advantage": advantage.clone().detach().to(dtype=torch.bfloat16, device=self.device),
         })
 
     def clear(self):

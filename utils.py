@@ -5,29 +5,9 @@ import numpy as np
 import wandb
 import torch.nn.functional as F
 from transformers import AutoTokenizer
-
-rustcode = '''```rust
-fn sort_list(mut list: Vec<i32>) -> Vec<i32> {
-    list.sort();
-    list
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sort_list() {
-        let unsorted = vec![5, 3, 8, 1, 2];
-        let sorted = sort_list(unsorted.clone());
-        assert_eq!(sorted, vec![1, 2, 3, 5, 8]);
-        assert_eq!(sorted, vec![1, 2, 3, 5, 8]);
-        assert_eq!(sorted, vec![1, 2, a3, 5, 8]);
-        assert_eq!(sorted, vec![1, 2, a3, 5, 8]);
-        assert_eq!(sorted, vec![1, 2123, a3, 5, 8]);
-    }
-}
-```'''
+from typing import List
+import os
+from torch.cuda.amp import autocast
 
 def extract_rust_code(text: str) -> Optional[str]:
     pattern = r'```rust\n(.*?)\n```'
@@ -77,8 +57,6 @@ def response_contains_asserts(code: str) -> float:
     
     return len(unique_asserts) / total_asserts
 
-# code running rewards and output rewards
-# This should all be in the environment
 def get_rewards(code: str):
     total_reward = {"not empty": 0, "code block": 0, "test block": 0, "asserts": 0}
     if check_code_not_empty(code):
@@ -104,12 +82,14 @@ def calc_advantages(rewards:list) -> torch.Tensor:
 def process_batch_rewards(batch_rewards, prompt, actions):
     """Process rewards in batches for better efficiency"""
     rewards_keys = ['not empty',
-                'code block', 
-                'test block', 
-                'asserts', 
-                'build', 
-                'clippy', 
-                'test']
+                    'code block', 
+                    'test block', 
+                    'asserts', 
+                    'build', 
+                    'clippy', 
+                    'test'
+                    ]
+    
     rows = []
     total_rewards = []
 
@@ -117,59 +97,43 @@ def process_batch_rewards(batch_rewards, prompt, actions):
         total_reward = sum(rewards[key] for key in rewards_keys)
         total_rewards.append(total_reward)
         
-        # Create a single row with all required columns
-        row = [
-            prompt,                     # question
-            actions[i],                 # generated_code
-            total_reward,              # total_rewards
-            rewards['test block'],      # test_block
-            rewards['asserts'],         # asserts
-        ]
+        row = [prompt,
+               actions[i],                 # generated_code
+               total_reward,
+               rewards['test block'],
+               rewards['asserts'],
+               ]
         rows.append(row)
 
     return rows, total_rewards
 
-# batched
-def get_logprobs(model, prompts, actions, tokenizer, use_no_grad = True) -> torch.Tensor:
+def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenizer, use_no_grad=True) -> torch.Tensor:
     """
-    Compute logprobs for the generated actions, given prompts.
-    Assumes prompts and actions are both [B, T] padded sequences.
-    We still need the prompts, Because they are used for predicint the actions.
+    Compute logprobs for the generated actions. `input_ids` should be the full prompt + response tokens.
+    `actions` should be padded to align with the response positions within input_ids, with -100 elsewhere.
     """
-    batch_input_ids = []
-    prompt_lengths = []
-
-    for prompt_ids, action_ids in zip(prompts, actions):
-        input_ids = torch.cat([prompt_ids, action_ids], dim=0)
-        prompt_lengths.append(len(prompt_ids))
-        batch_input_ids.append(input_ids)
-
-    batch_input_ids = torch.nn.utils.rnn.pad_sequence(
-        batch_input_ids, 
-        batch_first=True, 
-        padding_value=tokenizer.pad_token_id
-    ).to("cuda")
-
-    # Create attention mask: 1 for non-pad tokens, 0 for pad
-    attention_mask = (batch_input_ids != tokenizer.pad_token_id).long()
+    attention_mask = (input_ids != tokenizer.pad_token_id).long()
 
     if use_no_grad:
-        with torch.no_grad():
-            outputs = model(batch_input_ids, attention_mask=attention_mask, return_dict=True)
+        with torch.no_grad(), autocast(dtype=torch.bfloat16):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
     else:
-        outputs = model(batch_input_ids, attention_mask=attention_mask, return_dict=True)
+        with autocast(dtype=torch.bfloat16):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
 
-    logits = outputs.logits  # [B, T, V]
+    logits = outputs.logits  # [B, S, V]
+    log_probs = F.log_softmax(logits, dim=-1)
+    #actions = actions.cpu()
+    #log_probs = log_probs.cpu()
+    # Mask where actions are valid
+    action_mask = actions != -100  # [B, S]
 
-    all_logprobs = []
+    # Replace -100 with 0 (or any valid token id) to avoid gather errors
+    safe_actions = actions.clone()
+    safe_actions[~action_mask] = 0  # safe index to gather
+    
+    selected = log_probs.gather(2, safe_actions.unsqueeze(-1)).squeeze(-1)  # [B, S]
+    selected = selected * action_mask  # Zero out padding
 
-    for i, (prompt_len, action_ids) in enumerate(zip(prompt_lengths, actions)):
-        shift_logits = logits[i, prompt_len - 1:-1, :]
-        shift_labels = action_ids
-
-        log_probs = F.log_softmax(shift_logits, dim=-1)
-        token_logprobs = torch.gather(log_probs, 1, shift_labels.unsqueeze(-1)).squeeze(-1)
-        total_logprob = token_logprobs.sum()
-        all_logprobs.append(total_logprob)
-
-    return torch.stack(all_logprobs, dim=0)
+    logprobs = selected.sum(dim=1)  # Sum over sequence
+    return logprobs

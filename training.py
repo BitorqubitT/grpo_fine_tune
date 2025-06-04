@@ -23,9 +23,8 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_ext
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype="auto",
-    device_map="auto"
-)
+    device_map="auto",
+    torch_dtype=torch.bfloat16).to(device)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
@@ -33,7 +32,7 @@ df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 dataset = datasets.Dataset.from_pandas(df)
 
 data_loader = DataLoader(dataset,
-                         batch_size = 1,
+                         batch_size = 2,
                          shuffle = True
                         )
 
@@ -95,7 +94,8 @@ for k, batch in enumerate(data_loader):
     #wandb.log({"total_reward": np.mean(total_rewards)})
     
     # TODO: When do we update the reference model? Every x steps?
-    #grpo_agent.update_reference_model()
+    if k == 15:
+        grpo_agent.update_reference_model()
 
 wandb.log({"test_table": test_table})
-wandb.finish() 
+wandb.finish()

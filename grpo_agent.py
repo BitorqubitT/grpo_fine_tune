@@ -9,7 +9,7 @@ class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        self.reference_model = model.clone().eval()
+        #self.reference_model = copy.deepcopy(model).eval()
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -19,7 +19,7 @@ class GRPO_agent():
         self.kl_clip = 0.1
         self.clip_eps = 0.2   #Used in deepseek
         self.kl_coef = 0.1 #Used in deepseek
-        self.num_steps = 3
+        self.num_steps = 4
 
     def get_action(self, prompt) -> tuple:
         """
@@ -69,20 +69,20 @@ class GRPO_agent():
         # And actions are the models answers
 
         # (prompt+answer), answer adv
+                # We dont want the raw prompt, we want the input_ids
+        # And actions are the models answers
+
+        # (prompt+answer), answer adv
         input_ids, actions, advantages = self.memory.get_values()
-        print("input_ids", input_ids.shape)
-        print("actions_ids", actions.shape)
-        print("advantages", advantages)
         old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
-        #total_loss = 0.0
         policy_loss = 0.0
 
-        #TODO: better naming
         selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
         filtered = advantages[selected_rows]
         print(filtered)
         advantages = filtered.view(-1)
         print("advantages", advantages)
+        print(advantages.device)
 
         # 4 to 8
         for _ in range(self.num_steps):
@@ -90,14 +90,14 @@ class GRPO_agent():
             
             # We currently use total logprobs, so for the whole sequence.
             # Look at advanatage of doing it per token
+            print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
             #Values are toooooo big 
             #Lets use logspace operatoins:
-            ratio_log = new_logprobs - old_logprobs
-            ratio = torch.exp(torch.clamp(ratio_log, -10, 10))
+            ratio_log = (new_logprobs - old_logprobs).clamp(-0.2, 0.2)
+            ratio = torch.exp(ratio_log)
 
-            print("new_logprobs", new_logprobs)
-            print("old_logprobs", old_logprobs)
+            print("ratio_log", ratio_log)
             print("ratio", ratio)
             # PPO-style clipped loss
             clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
@@ -106,7 +106,9 @@ class GRPO_agent():
             policy_loss = -torch.mean(torch.min(loss_unclipped, loss_clipped))
 
             #TODO: Put in ref mode
-            ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+            with torch.no_grad():
+                ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+
             #ref_logprobs = new_logprobs
 
             kl_div = ref_logprobs - new_logprobs
@@ -114,16 +116,14 @@ class GRPO_agent():
             total_loss = policy_loss + self.kl_coef * kl_loss
             #print("policy_loss:", policy_loss)
             #print("kl_loss:", kl_loss)
-            #print("total_loss:", total_loss)
-
             print("policy_loss:", total_loss)
 
             self.optimizer.zero_grad()
-            total_loss.backward()
             #policy_loss.backward()
+            policy_loss.backward()
             self.optimizer.step() 
 
-            del new_logprobs, ref_logprobs, ratio, clipped_ratio, policy_loss, kl_loss, total_loss
+            del new_logprobs, ratio, clipped_ratio, total_loss, ref_logprobs
             #del new_logprobs, policy_loss
             gc.collect()
             torch.cuda.empty_cache()
