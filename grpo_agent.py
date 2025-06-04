@@ -2,14 +2,14 @@ import torch
 import torch.optim as optim
 from torch.nn.functional import kl_div, log_softmax
 from utils import get_logprobs
+from torch.nn.utils.rnn import pad_sequence
 import gc
 
 class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        self.reference_model = model.clone()
-        self.reference_mode.eval()
+        self.reference_model = model.clone().eval()
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -22,7 +22,6 @@ class GRPO_agent():
         self.num_steps = 3
 
     def get_action(self, prompt) -> tuple:
-
         """
         answers:  human-readable text (useful for logging or reward computation)
         model_inputs.input_ids: prompt
@@ -41,47 +40,52 @@ class GRPO_agent():
             add_generation_prompt=True
         )
 
-        model_inputs = self.tokenizer([text] * self.amount, return_tensors="pt", padding=True).to(self.device)
-        
-        self.model.config.pad_token_id = self.tokenizer.pad_token_id
-
+        model_inputs = self.tokenizer([text], return_tensors="pt", padding=True).to(self.device)
         attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
-        prompt_lengths = attention_mask.sum(dim=1).tolist()
 
         generated_full_ids = self.model.generate(
             model_inputs.input_ids,
             attention_mask=attention_mask,
             max_new_tokens=512,
-            #do_sample=True,
-            #top_k=50,
-            #top_p=0.95,
-            #temperature=1.0,
+            do_sample=True,
+            top_k=50,
+            top_p=0.95,
+            temperature=1.0,
             num_return_sequences=self.amount
         )
 
-        generated_ids = [
-            output_ids[prompt_len:]
-            for output_ids, prompt_len in zip(generated_full_ids, prompt_lengths)
-        ]
+        prompt_len = model_inputs.input_ids.shape[1]
+        generated_ids = [output_ids[prompt_len:] for output_ids in generated_full_ids]
 
         answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
         return answers, model_inputs.input_ids, generated_full_ids, generated_ids
+
+    def update_reference_model(self):
+        self.reference_model.load_state_dict(self.model.state_dict())
+        self.reference_model.eval()
 
     def optimise_network(self):
         # We dont want the raw prompt, we want the input_ids
         # And actions are the models answers
-        input_ids, actions, old_logprobs, advantages = self.memory.get_values()
-        total_loss = 0.0
 
-        if isinstance(actions, list):
-            actions = torch.stack(actions, dim=0)
-        if isinstance(old_logprobs, list):
-            old_logprobs = torch.cat(old_logprobs, dim=0).to(self.device) # [batch_size, seq_len]
+        # (prompt+answer), answer adv
+        input_ids, actions, advantages = self.memory.get_values()
+        print("input_ids", input_ids.shape)
+        print("actions_ids", actions.shape)
+        print("advantages", advantages)
+        old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
+        #total_loss = 0.0
+        policy_loss = 0.0
 
+        #TODO: better naming
+        selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
+        filtered = advantages[selected_rows]
+        print(filtered)
+        advantages = filtered.view(-1)
+        print("advantages", advantages)
+
+        # 4 to 8
         for _ in range(self.num_steps):
-            # Should i use new or old model here?
-
             new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
             
             # We currently use total logprobs, so for the whole sequence.
@@ -89,7 +93,6 @@ class GRPO_agent():
 
             #Values are toooooo big 
             #Lets use logspace operatoins:
-            #ratio = torch.exp(new_logprobs - old_logprobs)
             ratio_log = new_logprobs - old_logprobs
             ratio = torch.exp(torch.clamp(ratio_log, -10, 10))
 
@@ -104,60 +107,23 @@ class GRPO_agent():
 
             #TODO: Put in ref mode
             ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
-            
+            #ref_logprobs = new_logprobs
 
             kl_div = ref_logprobs - new_logprobs
             kl_loss = torch.mean(torch.clamp(kl_div, max=self.kl_clip))
             total_loss = policy_loss + self.kl_coef * kl_loss
-            print("policy_loss:", policy_loss.item())
-            print("kl_loss:", kl_loss.item())
-            print("total_loss:", total_loss.item())
+            #print("policy_loss:", policy_loss)
+            #print("kl_loss:", kl_loss)
+            #print("total_loss:", total_loss)
+
+            print("policy_loss:", total_loss)
 
             self.optimizer.zero_grad()
             total_loss.backward()
+            #policy_loss.backward()
             self.optimizer.step() 
 
-            #TODO: chekc these
             del new_logprobs, ref_logprobs, ratio, clipped_ratio, policy_loss, kl_loss, total_loss
+            #del new_logprobs, policy_loss
             gc.collect()
             torch.cuda.empty_cache()
-
-
-"""
-Each sample is one response generated by the policy for a prompt.
-prompt_input_ids: tokenized input IDs of the prompt.
-response_input_ids: tokenized output IDs of the response.
-log_prob: log probability of the response under the current policy (used in GRPO loss)
-reward: scalar reward assigned to this response.
-group_id: an identifier to group responses by prompt (3 responses per prompt = 1 group).        
-"""
-
-#TODO: Optimise this code, now i just overwrite the memory
-class Memory():
-    """ 
-        Class that holds memory for ppoagent
-    """
-    def __init__(self, num_steps: int, num_envs: int, device: torch.device, logits_shape):
-        #self.obs = torch.zeros((num_steps, num_envs) + (9,)).to(device)
-        self.device = device
-        self.num_envs = num_envs
-        self.num_steps = num_steps
-        self.input_ids = torch.zeros((num_steps, num_envs) + (9,)).to(device)
-        self.actions = torch.zeros((num_steps, num_envs) + (9,)).to(device)
-        self.logprobs = []
-        self.advantages = torch.zeros((num_steps, num_envs) + (9,)).to(device)
-
-    def update_values(self, input_ids, actions, logprobs, advantages):
-        self.input_ids = input_ids
-        self.actions = actions
-        self.logprobs.append(logprobs)
-        self.advantages = advantages
-    
-    def get_values(self) -> tuple:
-        return self.input_ids, self.actions, self.logprobs, self.advantages
-    
-    def clear(self):
-        self.input_ids = torch.zeros((self.num_steps, self.num_envs) + (9,)).to(self.device)
-        self.actions = torch.zeros((self.num_steps, self.num_envs) + (9,)).to(self.device)
-        self.logprobs = []
-        self.advantages = torch.zeros((self.num_steps, self.num_envs) + (9,)).to(self.device)
