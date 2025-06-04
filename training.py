@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader
 import datasets
 import torch.nn.functional as F
 from grpo_agent import GRPO_agent
-from grpo_agent import Memory
+from memory import Memory
 from utils import get_rewards, calc_advantages, process_batch_rewards
 from env import env
 import wandb
@@ -14,9 +14,7 @@ from utils import get_logprobs
 import os
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-
-device = "cuda" # the device to load the model onto
+device = "cuda"
 #model_name = "Qwen/Qwen3-0.6b"
 #model_name = "Qwen/Qwen3-1.8b"
 model_name = "Qwen/Qwen2.5-1.5B-Instruct"
@@ -30,9 +28,6 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # Models are misaligned on purpose.
-print("Tokenizer vocab size:", tokenizer.vocab_size)
-print("Model embedding size:", model.get_input_embeddings().num_embeddings)
-
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
 df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 dataset = datasets.Dataset.from_pandas(df)
@@ -57,55 +52,50 @@ columns = ['question',
 ]
 
 test_table = wandb.Table(columns = columns)
-memory = Memory(3, 1, device, (3, 4, 2))
-x = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
+memory = Memory(tokenizer, device)
+grpo_agent = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
 
-#TODO: Use the new get_logprobs function to get logprob
-# It doesnt use more resources than calculating it right after the model call for the query.
-# We giuve model, prompt, action, prompt length to retrieve it
+for k, batch in enumerate(data_loader):
+    memory.clear()
 
-# Should be epochs
-for _ in range(1):
-    for k, batch in enumerate(data_loader):
-        if k == 30:
-            break
-        print("################################################")
-        prompt = batch["rust_prompt"][0]
-        action, prompt_id, generated_full_ids, generated_ids = x.get_action(prompt)
-        
+    if k == 30:
+        break
+
+    # TODO: Give normal ids to prompts so we can reuse or search them later.
+
+    # Get a dictionary with, task id, rust_prompt.
+    batch_prompts = batch["rust_prompt"]
+
+    for prompt in batch_prompts:
+        # str answer, prompt id, prompt+answerids, answer_ids
+        action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
         batch_rewards = env.step(action)
- 
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
-
-        wandb.log({"total_reward": np.mean(total_rewards)})
-     
-        #answers:  human-readable text (useful for logging or reward computation)
-        #model_inputs.input_ids: prompt
-        #generated_ids: what the model did aka answer
-        #generated_full_ids: full sequence, useful for recovering the original generation context
-        
-        for row in table_rows:
-            test_table.add_data(*row)
-
-        #TODO: CHECK, I think we somehow reload the model with get_logprobs
-
-        print("total_rewards", total_rewards)
         advantages = calc_advantages(total_rewards)
-        threshold = 1e-3
-        if advantages.abs().max().item() < threshold:
-            print("All samples have low advantage, skipping this step.")
-            print("advantages", advantages)
-            memory.clear()
-            continue  # Skip memory update and optimization
+        for i in range(3): # sample size
+            full_input_ids = generated_full_ids[i]
+            generated_id = generated_ids[i]
+            memory.add_sample(full_input_ids, generated_id, advantages)
+
+        #threshold = 1e-3
+        #if advantages.abs().max().item() < threshold:
+        #    print("All samples have low advantage, skipping this step.")
+        #    print("advantages", advantages)
+        #    memory.clear()
+        #    continue 
         
-        logprobs = get_logprobs(model, prompt_id, generated_ids, tokenizer, use_no_grad=True)
+    print('------------------------------------go optimise')
+    grpo_agent.optimise_network()
+    # Copy to ref model
 
-        print("advantages", advantages)
-        memory.update_values(prompt_id, generated_ids, logprobs, advantages)
-        x.optimise_network()
-        # Copy to ref model
-        memory.clear()
+    #TODO: Fix this later
+    #for row in table_rows:
+    #    test_table.add_data(*row)
+    #wandb.log({"total_reward": np.mean(total_rewards)})
+    
+    # TODO: When do we update the reference model? Every x steps?
+    #grpo_agent.update_reference_model()
 
-    wandb.log({"test_table": test_table})
-    wandb.finish() 
+wandb.log({"test_table": test_table})
+wandb.finish() 
