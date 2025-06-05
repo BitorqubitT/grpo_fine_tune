@@ -2,7 +2,6 @@ import re
 from typing import Optional
 import torch
 import numpy as np
-import wandb
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 from typing import List
@@ -98,7 +97,7 @@ def process_batch_rewards(batch_rewards, prompt, actions):
         total_rewards.append(total_reward)
         
         row = [prompt,
-               actions[i],                 # generated_code
+               actions[i],
                total_reward,
                rewards['test block'],
                rewards['asserts'],
@@ -123,9 +122,6 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
 
     logits = outputs.logits  # [B, S, V]
     log_probs = F.log_softmax(logits, dim=-1)
-    #actions = actions.cpu()
-    #log_probs = log_probs.cpu()
-    # Mask where actions are valid
     action_mask = actions != -100  # [B, S]
 
     # Replace -100 with 0 (or any valid token id) to avoid gather errors

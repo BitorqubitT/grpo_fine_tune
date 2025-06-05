@@ -16,8 +16,8 @@ from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
 device = "cuda"
 #model_name = "Qwen/Qwen3-0.6b"
-#model_name = "Qwen/Qwen3-1.8b"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "Qwen/Qwen3-1.8b"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
@@ -55,47 +55,52 @@ memory = Memory(tokenizer, device)
 grpo_agent = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
 
+# If advantage is 0, we try again later.
+skipped_prompts = []
+
 for k, batch in enumerate(data_loader):
     memory.clear()
 
-    if k == 30:
+    if k == 100:
         break
 
-    # TODO: Give normal ids to prompts so we can reuse or search them later.
-
-    # Get a dictionary with, task id, rust_prompt.
-    batch_prompts = batch["rust_prompt"]
-
-    for prompt in batch_prompts:
+    for prompt, prompt_id in zip(batch["rust_prompt"], batch["task_id"]):
+        print(prompt_id)
         # str answer, prompt id, prompt+answerids, answer_ids
         action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
+        if sum(total_rewards)/len(total_rewards) == 1:
+            print(total_rewards)
+            print("Skipping this prompt, all rewards are the same.")
+            skipped_prompts.append(prompt_id)
+            continue
         advantages = calc_advantages(total_rewards)
+        if sum(advantages)/advantages.shape[0] == advantages[0]:
+            print(total_rewards)
+            print(advantages)
+            print("Skipping this prompt, all advantages are the same.")
+            skipped_prompts.append(prompt_id)
+            continue
+
+        print(f"Prompt ID: {prompt_id}, total_rewards: {total_rewards}, advantages: {advantages}")
+
         for i in range(3): # sample size
             full_input_ids = generated_full_ids[i]
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
 
-        #threshold = 1e-3
-        #if advantages.abs().max().item() < threshold:
-        #    print("All samples have low advantage, skipping this step.")
-        #    print("advantages", advantages)
-        #    memory.clear()
-        #    continue 
         
     print('------------------------------------go optimise')
-    grpo_agent.optimise_network()
-    # Copy to ref model
+    logging = grpo_agent.optimise_network()
 
     #TODO: Fix this later
-    #for row in table_rows:
-    #    test_table.add_data(*row)
-    #wandb.log({"total_reward": np.mean(total_rewards)})
-    
+    for row in logging:
+        test_table.add_data(*row)
+    wandb.log({"my_table": test_table}) 
+
     # TODO: When do we update the reference model? Every x steps?
-    if k == 15:
+    if k == 50:
         grpo_agent.update_reference_model()
 
-wandb.log({"test_table": test_table})
 wandb.finish()

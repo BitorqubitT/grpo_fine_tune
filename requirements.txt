@@ -3,3 +3,4 @@ numpy==2.2.6
 pandas==2.2.3
 torch==2.6.0+cu118
 transformers==4.51.3
+wandb==0.18.0

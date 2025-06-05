@@ -9,7 +9,7 @@ class GRPO_agent():
 
     def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        #self.reference_model = copy.deepcopy(model).eval()
+        self.reference_model = copy.deepcopy(model).eval()
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -65,27 +65,19 @@ class GRPO_agent():
         self.reference_model.eval()
 
     def optimise_network(self):
-        # We dont want the raw prompt, we want the input_ids
-        # And actions are the models answers
-
-        # (prompt+answer), answer adv
-                # We dont want the raw prompt, we want the input_ids
-        # And actions are the models answers
-
-        # (prompt+answer), answer adv
         input_ids, actions, advantages = self.memory.get_values()
         old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
         policy_loss = 0.0
 
         selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
         filtered = advantages[selected_rows]
-        print(filtered)
+        
         advantages = filtered.view(-1)
-        print("advantages", advantages)
-        print(advantages.device)
 
         # 4 to 8
-        for _ in range(self.num_steps):
+        logging_metrics = []
+
+        for step in range(self.num_steps):
             new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
             
             # We currently use total logprobs, so for the whole sequence.
@@ -97,8 +89,6 @@ class GRPO_agent():
             ratio_log = (new_logprobs - old_logprobs).clamp(-0.2, 0.2)
             ratio = torch.exp(ratio_log)
 
-            print("ratio_log", ratio_log)
-            print("ratio", ratio)
             # PPO-style clipped loss
             clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
             loss_unclipped = ratio * advantages
@@ -109,21 +99,31 @@ class GRPO_agent():
             with torch.no_grad():
                 ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
 
-            #ref_logprobs = new_logprobs
 
             kl_div = ref_logprobs - new_logprobs
             kl_loss = torch.mean(torch.clamp(kl_div, max=self.kl_clip))
             total_loss = policy_loss + self.kl_coef * kl_loss
-            #print("policy_loss:", policy_loss)
-            #print("kl_loss:", kl_loss)
-            print("policy_loss:", total_loss)
+            
+            print("total_loss:", total_loss)
 
             self.optimizer.zero_grad()
-            #policy_loss.backward()
-            policy_loss.backward()
+            total_loss.backward()
             self.optimizer.step() 
+
+            logging_metrics.append([
+                step,
+                ratio_log,
+                ratio,
+                clipped_ratio,
+                loss_unclipped,
+                loss_clipped,
+                kl_div,
+                kl_loss,
+                total_loss])
 
             del new_logprobs, ratio, clipped_ratio, total_loss, ref_logprobs
             #del new_logprobs, policy_loss
             gc.collect()
             torch.cuda.empty_cache()
+
+        return logging_metrics

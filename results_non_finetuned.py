@@ -64,6 +64,23 @@ if __name__ == "__main__":
                             batch_size = 1,
                             shuffle = True
                             )
+    
+    wandb.init(project = "llm finetune",
+           name = f"eval set non-finetuned",
+           config = {
+                    "gamma": 5,
+                    }
+            )
+
+    columns = ['question',
+            'generated_code',
+            'total_rewards',
+            'test_block',
+            'asserts'
+    ]
+
+    test_table = wandb.Table(columns = columns)
+
 
     env = env(CARGO_TOML_FILE, template_rs_file)
     for k, batch in enumerate(data_loader):
@@ -78,3 +95,10 @@ if __name__ == "__main__":
         
         #TODO: Check if the reward structure that I am using is correct.
         #TODO: logging to wandb 
+
+        for row in table_rows:
+            test_table.add_data(*row)
+        wandb.log({"total_reward": np.mean(total_rewards)})
+    
+    wandb.log({"test_table": test_table})
+    wandb.finish()
