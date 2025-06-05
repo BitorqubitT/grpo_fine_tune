@@ -16,8 +16,8 @@ from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
 device = "cuda"
 #model_name = "Qwen/Qwen3-0.6b"
-model_name = "Qwen/Qwen3-1.8b"
-#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+#model_name = "Qwen/Qwen3-1.8b"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
@@ -37,20 +37,9 @@ data_loader = DataLoader(dataset,
                         )
 
 wandb.init(project = "llm finetune",
-           name = f"experiment 9424",
-           config = {
-                    "gamma": 5,
-                    }
+           name = f"experiment 9424"
             )
 
-columns = ['question',
-           'generated_code',
-           'total_rewards',
-           'test_block',
-           'asserts'
-]
-
-test_table = wandb.Table(columns = columns)
 memory = Memory(tokenizer, device)
 grpo_agent = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
@@ -64,8 +53,7 @@ for k, batch in enumerate(data_loader):
     if k == 100:
         break
 
-    for prompt, prompt_id in zip(batch["rust_prompt"], batch["task_id"]):
-        print(prompt_id)
+    for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
         # str answer, prompt id, prompt+answerids, answer_ids
         action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
         batch_rewards = env.step(action)
@@ -73,33 +61,29 @@ for k, batch in enumerate(data_loader):
         if sum(total_rewards)/len(total_rewards) == 1:
             print(total_rewards)
             print("Skipping this prompt, all rewards are the same.")
-            skipped_prompts.append(prompt_id)
+            skipped_prompts.append(task_id)
             continue
         advantages = calc_advantages(total_rewards)
         if sum(advantages)/advantages.shape[0] == advantages[0]:
             print(total_rewards)
             print(advantages)
             print("Skipping this prompt, all advantages are the same.")
-            skipped_prompts.append(prompt_id)
+            skipped_prompts.append(task_id)
             continue
 
-        print(f"Prompt ID: {prompt_id}, total_rewards: {total_rewards}, advantages: {advantages}")
+        print(f"Prompt ID: {task_id}, total_rewards: {total_rewards}, advantages: {advantages}")
 
         for i in range(3): # sample size
             full_input_ids = generated_full_ids[i]
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
-
         
-    print('------------------------------------go optimise')
     logging = grpo_agent.optimise_network()
 
-    #TODO: Fix this later
     for row in logging:
-        test_table.add_data(*row)
-    wandb.log({"my_table": test_table}) 
+        wandb.log({"step": row[0],
+                  "loss": row[1]})
 
-    # TODO: When do we update the reference model? Every x steps?
     if k == 50:
         grpo_agent.update_reference_model()
 

@@ -4,6 +4,7 @@ from torch.nn.functional import kl_div, log_softmax
 from utils import get_logprobs
 from torch.nn.utils.rnn import pad_sequence
 import gc
+import copy
 
 class GRPO_agent():
 
@@ -82,7 +83,7 @@ class GRPO_agent():
             
             # We currently use total logprobs, so for the whole sequence.
             # Look at advanatage of doing it per token
-            print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+            #print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
             #Values are toooooo big 
             #Lets use logspace operatoins:
@@ -100,8 +101,8 @@ class GRPO_agent():
                 ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
 
 
-            kl_div = ref_logprobs - new_logprobs
-            kl_loss = torch.mean(torch.clamp(kl_div, max=self.kl_clip))
+            kl_div = new_logprobs - ref_logprobs
+            kl_loss = torch.mean(kl_div)
             total_loss = policy_loss + self.kl_coef * kl_loss
             
             print("total_loss:", total_loss)
@@ -112,17 +113,11 @@ class GRPO_agent():
 
             logging_metrics.append([
                 step,
-                ratio_log,
-                ratio,
-                clipped_ratio,
-                loss_unclipped,
-                loss_clipped,
-                kl_div,
-                kl_loss,
                 total_loss])
-
-            del new_logprobs, ratio, clipped_ratio, total_loss, ref_logprobs
-            #del new_logprobs, policy_loss
+            
+            with torch.no_grad():
+                del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div
+            
             gc.collect()
             torch.cuda.empty_cache()
 

@@ -111,6 +111,8 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
     Compute logprobs for the generated actions. `input_ids` should be the full prompt + response tokens.
     `actions` should be padded to align with the response positions within input_ids, with -100 elsewhere.
     """
+    print("DEBUG tokenizer type:", type(tokenizer))
+
     attention_mask = (input_ids != tokenizer.pad_token_id).long()
 
     if use_no_grad:
