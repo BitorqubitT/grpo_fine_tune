@@ -114,12 +114,14 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
     print("DEBUG tokenizer type:", type(tokenizer))
 
     attention_mask = (input_ids != tokenizer.pad_token_id).long()
-
+    assert input_ids.shape == actions.shape, "input_ids and actions must have the same shape"
     if use_no_grad:
-        with torch.no_grad(), autocast(dtype=torch.bfloat16):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        #with torch.no_grad(), autocast(dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
     else:
-        with autocast(dtype=torch.bfloat16):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        #with autocast(dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
 
     logits = outputs.logits  # [B, S, V]
@@ -134,4 +136,9 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
     selected = selected * action_mask  # Zero out padding
 
     logprobs = selected.sum(dim=1)  # Sum over sequence
+
+    print("action mask", action_mask.sum(dim=1))
+    print("Per-token logprobs (filtered):", selected[0][action_mask[0]])
+    print("Avg per-token logprob:", selected[0][action_mask[0]].mean())
+    print("Num response tokens:", action_mask[0].sum())
     return logprobs

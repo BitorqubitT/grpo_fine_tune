@@ -59,15 +59,11 @@ for k, batch in enumerate(data_loader):
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
         if sum(total_rewards)/len(total_rewards) == 1:
-            print(total_rewards)
-            print("Skipping this prompt, all rewards are the same.")
             skipped_prompts.append(task_id)
             continue
+        
         advantages = calc_advantages(total_rewards)
         if sum(advantages)/advantages.shape[0] == advantages[0]:
-            print(total_rewards)
-            print(advantages)
-            print("Skipping this prompt, all advantages are the same.")
             skipped_prompts.append(task_id)
             continue
 
@@ -77,7 +73,11 @@ for k, batch in enumerate(data_loader):
             full_input_ids = generated_full_ids[i]
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
-        
+
+    if len(memory.buffer) == 0:
+        print("Empty so we skip")
+        continue
+
     logging = grpo_agent.optimise_network()
 
     for row in logging:

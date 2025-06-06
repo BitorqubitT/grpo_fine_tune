@@ -87,25 +87,45 @@ class GRPO_agent():
 
             #Values are toooooo big 
             #Lets use logspace operatoins:
-            ratio_log = (new_logprobs - old_logprobs).clamp(-0.2, 0.2)
-            ratio = torch.exp(ratio_log)
+            print("----------------------- new step ----------------------------")
+            print("new logprobs", new_logprobs.tolist())
+            print("old logprobs", old_logprobs.tolist())
+            #ratio_log = (new_logprobs - old_logprobs).clamp(-0.2, 0.2)
+            #ratio = torch.exp(ratio_log)
+            ratio = torch.exp(new_logprobs - old_logprobs)
+            clipped_ratio = torch.clamp(ratio, 1 - 0.2, 1 + 0.2)
+            print("ratio:", ratio.tolist())
+            print("ratio_log:", clipped_ratio.tolist())
 
             # PPO-style clipped loss
             clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
             loss_unclipped = ratio * advantages
             loss_clipped = clipped_ratio * advantages
             policy_loss = -torch.mean(torch.min(loss_unclipped, loss_clipped))
+            print("policy_loss:", policy_loss.item())
 
             #TODO: Put in ref mode
             with torch.no_grad():
                 ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
 
+            print("new logprobs", new_logprobs.tolist())
+            print("ref logprobs", ref_logprobs.tolist())
 
-            kl_div = new_logprobs - ref_logprobs
-            kl_loss = torch.mean(kl_div)
-            total_loss = policy_loss + self.kl_coef * kl_loss
+            #kl_div = new_logprobs - ref_logprobs
+            #kl_loss = torch.mean(kl_div)
+            #print("kl_loss:", kl_loss.item())
+            #total_loss = policy_loss + self.kl_coef * kl_loss
+
+
+            kl_diff = new_logprobs - ref_logprobs  # shape: [batch]
+            kl_div = torch.exp(kl_diff) * kl_diff  # KL term per sample
+            kl_loss = kl_div.mean()                # mean over batch
+            print("kl_loss:", kl_loss.item())
             
-            print("total_loss:", total_loss)
+            total_loss = policy_loss + self.kl_coef * kl_loss
+
+
+            print("total_loss:", total_loss.item())
 
             self.optimizer.zero_grad()
             total_loss.backward()
