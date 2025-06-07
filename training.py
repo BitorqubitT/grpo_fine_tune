@@ -15,9 +15,9 @@ import os
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
 device = "cuda"
-#model_name = "Qwen/Qwen3-0.6b"
+model_name = "Qwen/Qwen3-0.6b"
 #model_name = "Qwen/Qwen3-1.8b"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
@@ -82,8 +82,8 @@ for k, batch in enumerate(data_loader):
 
     for row in logging:
         wandb.log({"step": row[0],
-                  "loss": row[1]})
-
+                  "loss": row[1],
+                  "kl_loss": row[2]})
     if k == 50:
         grpo_agent.update_reference_model()
 

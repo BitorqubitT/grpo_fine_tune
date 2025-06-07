@@ -74,7 +74,9 @@ class GRPO_agent():
         filtered = advantages[selected_rows]
         
         advantages = filtered.view(-1)
-
+        action_mask = (actions != -100).float()
+        # We do this because we have logprobs per token
+        advantages = advantages.unsqueeze(1) * action_mask  # [B, S] -> [B, S] with actions masked 
         # 4 to 8
         logging_metrics = []
 
@@ -85,45 +87,29 @@ class GRPO_agent():
             # Look at advanatage of doing it per token
             #print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
-            #Values are toooooo big 
-            #Lets use logspace operatoins:
             print("----------------------- new step ----------------------------")
-            print("new logprobs", new_logprobs.tolist())
-            print("old logprobs", old_logprobs.tolist())
-            #ratio_log = (new_logprobs - old_logprobs).clamp(-0.2, 0.2)
-            #ratio = torch.exp(ratio_log)
             ratio = torch.exp(new_logprobs - old_logprobs)
-            clipped_ratio = torch.clamp(ratio, 1 - 0.2, 1 + 0.2)
-            print("ratio:", ratio.tolist())
-            print("ratio_log:", clipped_ratio.tolist())
 
             # PPO-style clipped loss
             clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
             loss_unclipped = ratio * advantages
             loss_clipped = clipped_ratio * advantages
-            policy_loss = -torch.mean(torch.min(loss_unclipped, loss_clipped))
+
+            per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
+            #TODO: Check if this is still useful
+
+            # Normalize: mean over non-masked tokens
+            policy_loss = per_token_loss.sum(dim=1).mean()
             print("policy_loss:", policy_loss.item())
 
             #TODO: Put in ref mode
             with torch.no_grad():
                 ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
 
-            print("new logprobs", new_logprobs.tolist())
-            print("ref logprobs", ref_logprobs.tolist())
-
-            #kl_div = new_logprobs - ref_logprobs
-            #kl_loss = torch.mean(kl_div)
-            #print("kl_loss:", kl_loss.item())
-            #total_loss = policy_loss + self.kl_coef * kl_loss
-
-
-            kl_diff = new_logprobs - ref_logprobs  # shape: [batch]
-            kl_div = torch.exp(kl_diff) * kl_diff  # KL term per sample
-            kl_loss = kl_div.mean()                # mean over batch
+            kl_div = new_logprobs - ref_logprobs
+            kl_loss = torch.mean(kl_div)
             print("kl_loss:", kl_loss.item())
-            
             total_loss = policy_loss + self.kl_coef * kl_loss
-
 
             print("total_loss:", total_loss.item())
 
@@ -131,12 +117,10 @@ class GRPO_agent():
             total_loss.backward()
             self.optimizer.step() 
 
-            logging_metrics.append([
-                step,
-                total_loss])
+            logging_metrics.append([step, total_loss, kl_loss])
             
             with torch.no_grad():
-                del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div
+                del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss
             
             gc.collect()
             torch.cuda.empty_cache()

@@ -89,8 +89,9 @@ class env():
         """Main function to run Rust code tests"""
         results = {}
         tools = [RustTool("build"), RustTool("clippy"), RustTool("test")]
+        shutil.rmtree(Path("outputs") / "tests")
         base_dir = Path("outputs") / "tests"
-        
+
         project_dir = self._setup_rust_project(base_dir, cargo_toml, template_rs, rust_code)
         if not project_dir:
             return results
