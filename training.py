@@ -83,7 +83,7 @@ for k, batch in enumerate(data_loader):
     for row in logging:
         wandb.log({"step": row[0],
                   "loss": row[1],
-                  "kl_loss": row[2]
+                  "kl_loss": row[2],
                   "mean_advantage:": sum(advantages)/advantages.shape[0]})
     if k == 50:
         grpo_agent.update_reference_model()
