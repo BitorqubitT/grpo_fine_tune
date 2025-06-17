@@ -8,6 +8,7 @@ from utils import get_rewards, calc_advantages, process_batch_rewards
 from env import env
 import wandb
 import pandas as pd
+from peft import LoraConfig, get_peft_model
 import numpy as np
 import torch
 from utils import get_logprobs
@@ -15,16 +16,27 @@ import os
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
 device = "cuda"
-model_name = "Qwen/Qwen3-0.6b"
+#model_name = "Qwen/Qwen3-0.6b"
 #model_name = "Qwen/Qwen3-1.8b"
-#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
+
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=32,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    lora_dropout=0.1,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
     torch_dtype=torch.bfloat16).to(device)
+
+model = get_peft_model(model, lora_config)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
@@ -37,7 +49,7 @@ data_loader = DataLoader(dataset,
                         )
 
 wandb.init(project = "llm finetune",
-           name = f"experiment 9424"
+           name = f"experiment 9425"
             )
 
 memory = Memory(tokenizer, device)
@@ -48,9 +60,10 @@ env = env(CARGO_TOML_FILE, template_rs_file)
 skipped_prompts = []
 
 for k, batch in enumerate(data_loader):
+    print(k)
     memory.clear()
 
-    if k == 100:
+    if k == 3000:
         break
 
     for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
@@ -84,8 +97,10 @@ for k, batch in enumerate(data_loader):
         wandb.log({"step": row[0],
                   "loss": row[1],
                   "kl_loss": row[2],
-                  "mean_advantage:": sum(advantages)/advantages.shape[0]})
+                  "mean_advantage:": sum(advantages)/advantages.shape[0],
+                  "average_loss": row[3]})
     if k == 50:
         grpo_agent.update_reference_model()
 
+print(len(skipped_prompts))
 wandb.finish()

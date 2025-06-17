@@ -5,6 +5,7 @@ from utils import get_logprobs
 from torch.nn.utils.rnn import pad_sequence
 import gc
 import copy
+from collections import deque
 
 class GRPO_agent():
 
@@ -20,7 +21,8 @@ class GRPO_agent():
         self.kl_clip = 0.1
         self.clip_eps = 0.2   #Used in deepseek
         self.kl_coef = 0.1 #Used in deepseek
-        self.num_steps = 4
+        self.num_steps = 3
+        self.losses = deque(maxlen=100)
 
     def get_action(self, prompt) -> tuple:
         """
@@ -64,6 +66,11 @@ class GRPO_agent():
     def update_reference_model(self):
         self.reference_model.load_state_dict(self.model.state_dict())
         self.reference_model.eval()
+
+    def update_loss(self, new_loss):
+        self.losses.append(new_loss)
+        avg_loss = sum(self.losses) / len(self.losses)
+        return avg_loss
 
     def optimise_network(self):
         input_ids, actions, advantages = self.memory.get_values()
@@ -117,7 +124,10 @@ class GRPO_agent():
             total_loss.backward()
             self.optimizer.step() 
 
-            logging_metrics.append([step, total_loss, kl_loss])
+            average_loss = self.update_loss(total_loss.item())
+
+            logging_metrics.append([step, total_loss, kl_loss, average_loss])
+
             
             with torch.no_grad():
                 del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss
