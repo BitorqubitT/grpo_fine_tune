@@ -61,7 +61,6 @@ skipped_prompts = []
 
 for k, batch in enumerate(data_loader):
     print(k)
-    memory.clear()
 
     if k == 3000:
         break
@@ -88,7 +87,7 @@ for k, batch in enumerate(data_loader):
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
 
-    if len(memory.buffer) == 0:
+    if len(memory.buffer) == 6:
         print("Empty so we skip")
         continue
 
@@ -103,6 +102,8 @@ for k, batch in enumerate(data_loader):
                   "average_loss": row[3]})
     if k == 50:
         grpo_agent.update_reference_model()
+
+    memory.clear()
 
 print(len(skipped_prompts))
 wandb.finish()
