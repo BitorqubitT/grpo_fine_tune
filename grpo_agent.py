@@ -9,9 +9,10 @@ from collections import deque
 
 class GRPO_agent():
 
-    def __init__(self, model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
+    def __init__(self, model, reference_model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
         self.model = model
-        self.reference_model = copy.deepcopy(model).eval()
+        self.reference_model = copy.deepcopy(reference_model).eval()
+        #self.reference_model = reference_model
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -21,7 +22,7 @@ class GRPO_agent():
         self.kl_clip = 0.1
         self.clip_eps = 0.2   #Used in deepseek
         self.kl_coef = 0.1 #Used in deepseek
-        self.num_steps = 3
+        self.num_steps = 4
         self.losses = deque(maxlen=100)
 
     def get_action(self, prompt) -> tuple:

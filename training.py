@@ -31,12 +31,12 @@ lora_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-model = AutoModelForCausalLM.from_pretrained(
+base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
     torch_dtype=torch.bfloat16).to(device)
 
-model = get_peft_model(model, lora_config)
+model = get_peft_model(base_model, lora_config)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
@@ -44,16 +44,16 @@ df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 dataset = datasets.Dataset.from_pandas(df)
 
 data_loader = DataLoader(dataset,
-                         batch_size = 2,
+                         batch_size = 1,
                          shuffle = True
                         )
 
 wandb.init(project = "llm finetune",
-           name = f"experiment 9425"
+           name = f"experiment 9426"
             )
 
 memory = Memory(tokenizer, device)
-grpo_agent = GRPO_agent(model, tokenizer, SYSTEM_PROMPT, 3, memory)
+grpo_agent = GRPO_agent(model, base_model, tokenizer, SYSTEM_PROMPT, 3, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
 
 # If advantage is 0, we try again later.
@@ -66,6 +66,7 @@ for k, batch in enumerate(data_loader):
     if k == 3000:
         break
 
+    #TODO: change this so we also have 
     for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
         # str answer, prompt id, prompt+answerids, answer_ids
         action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
@@ -98,6 +99,7 @@ for k, batch in enumerate(data_loader):
                   "loss": row[1],
                   "kl_loss": row[2],
                   "mean_advantage:": sum(advantages)/advantages.shape[0],
+                  # TODO: change this to moving average?
                   "average_loss": row[3]})
     if k == 50:
         grpo_agent.update_reference_model()
