@@ -6,11 +6,12 @@ from env import env
 import wandb
 import pandas as pd
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
+import numpy as np
 
 # This script is used to run the non-finetuned models on the dataset.
 # This is used as a baseline to compare against the finetuned models.
 
-def get_answer(prompt, chat_template, tokenizer, model, amount=3, device="cuda"):
+def get_answer(prompt, chat_template, tokenizer, model, amount=1, device="cuda"):
     messages = [
         {"role": "system", "content": chat_template},
         {"role": "user", "content": prompt}
@@ -22,16 +23,17 @@ def get_answer(prompt, chat_template, tokenizer, model, amount=3, device="cuda")
         add_generation_prompt=True
     )
 
-    model_inputs = tokenizer([text], return_tensors="pt", padding=True).to(device)
+    model_inputs = tokenizer([text], return_tensors="pt", padding=True, return_attention_mask=True).to(device)
 
     generated_full_ids = model.generate(
-        model_inputs.input_ids,
-        max_new_tokens = 512,
-        num_return_sequences = amount,
+        input_ids=model_inputs.input_ids,
+        attention_mask=model_inputs.attention_mask,
+        #max_prompt_length= 256,
+        max_new_tokens = 1024,
+        #num_return_sequences = amount,
         do_sample=True,
-        top_k=50,
-        top_p=0.95,
-        temperature=1.0,
+        top_p=0.90,
+        temperature=0.2,
     )
 
     prompt_len = model_inputs.input_ids.shape[1]
@@ -43,13 +45,9 @@ def get_answer(prompt, chat_template, tokenizer, model, amount=3, device="cuda")
 if __name__ == "__main__":
 
     device = "cuda" # the device to load the model onto
-
-    model_name = "Qwen/Qwen2-1.5B-Instruct"
-    #model_name = "Qwen/Qwen3-1.7B"
-    #model_name = "Qwen/Qwen3-0.6b"
+    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype="auto",
@@ -57,16 +55,23 @@ if __name__ == "__main__":
     )
 
     #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
-    df = pd.read_parquet("data/cargo_test_passed_train.parquet")
+    #df = pd.read_parquet("data/cargo_test_passed_train.parquet")
+    df = pd.read_parquet("data/results_code_and_tests.parquet")
+    print(df.shape)
     dataset = datasets.Dataset.from_pandas(df)
-
-    data_loader = DataLoader(dataset,
-                            batch_size = 1,
-                            shuffle = True
-                            )
+    dataset = dataset.shuffle(seed=1337)
     
-    wandb.init(project = "llm finetune",
-           name = f"eval set non-finetuned",
+    eval_dataset = dataset.select(range(500))
+    #train_dataset = dataset.select(range(500, len(dataset)))
+
+    #train_dataset.save_to_disk("data/train_split")
+    #eval_dataset.save_to_disk("data/eval_split")
+
+    eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
+
+    print(len(eval_dataset))
+    wandb.init(project = "llm finetune eval 344512",
+           name = f"eval set non-finetuned 3445123",
            config = {
                     "gamma": 5,
                     }
@@ -74,31 +79,30 @@ if __name__ == "__main__":
 
     columns = ['question',
             'generated_code',
-            'total_rewards',
-            'test_block',
-            'asserts'
-    ]
+            'total_reward',
+            'not empty',
+            'code block',
+            'test block',
+            'asserts',
+            'build',
+            'clippy',
+            'test'
+            ]
 
     test_table = wandb.Table(columns = columns)
 
-
     env = env(CARGO_TOML_FILE, template_rs_file)
-    for k, batch in enumerate(data_loader):
-
+    for k, batch in enumerate(eval_loader):
         prompt = batch['rust_prompt'][0]
 
-        action = get_answer(prompt, SYSTEM_PROMPT, tokenizer, model, amount=3, device=device)
+        action = get_answer(prompt, SYSTEM_PROMPT, tokenizer, model, amount=1, device=device)
 
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
-        print(total_rewards)
         
-        #TODO: Check if the reward structure that I am using is correct.
-        #TODO: logging to wandb 
-
         for row in table_rows:
             test_table.add_data(*row)
         wandb.log({"total_reward": np.mean(total_rewards)})
-    
+
     wandb.log({"test_table": test_table})
-    wandb.finish()
+    wandb.finish() 

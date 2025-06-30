@@ -20,27 +20,35 @@ class env():
         for code in answer:
             format_results = self._format_rewards(code)
 
-            # Test rust rewards
-            rust_results = self._run_rust_tests(code, self.cargo_toml, self.template_rs)
-            run_rust_rewards = self._rust_rewards(rust_results)
+            # HACK: Ugly
+            # Build and clippy can pass if code is empty
+            if format_results["not empty"] == 0 or format_results["code block"] == 0:
+                # Code is empty we can skip further
+                run_rust_rewards = {'build': 0, 'clippy': 0, 'test': 0, 'result_output': ''}
+            else:
+                rust_results = self._run_rust_tests(code, self.cargo_toml, self.template_rs)
+                run_rust_rewards = self._rust_rewards(rust_results)
+                # Test can pass if no test block is present
+                if format_results["test block"] == 0:
+                    run_rust_rewards['test'] = 0
 
             all_rewards.append({**format_results, **run_rust_rewards})
 
         return all_rewards
 
     def _format_rewards(self, code) -> Dict[str, float]:
-        total_reward = {"not empty": 0, "code block": 0, "test block": 0, "asserts": 0}
+        format_rewards = {"not empty": 0, "code block": 0, "test block": 0, "asserts": 0}
         if self._check_code_not_empty(code):
-            total_reward["not empty"] = 1
+            format_rewards["not empty"] = 1
         if self._check_code_block(code):
-            total_reward["code block"] = 1
+            format_rewards["code block"] = 1
         if self._check_test_block(code):
-            total_reward["test block"] = 1
-        total_reward["asserts"] = self._response_contains_asserts(code)
-        return total_reward
+            format_rewards["test block"] = 1
+        format_rewards["asserts"] = self._response_contains_asserts(code)
+        return format_rewards
 
     def _rust_rewards(self, results):
-        rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'test_time': 0, 'result_output': ''} 
+        rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'result_output': ''} 
         for tool_name, result in results.items():
             if result.passed:
                 rust_tool_reward[tool_name] = 1
@@ -49,7 +57,6 @@ class env():
             if result.stderr:
                 rust_tool_reward['result_output'] = result.stderr
             if result.stdout:
-                rust_tool_reward['test_time'] = result.execution_time
                 rust_tool_reward['result_output'] = result.stdout
         
         return rust_tool_reward
@@ -150,7 +157,8 @@ class env():
             
         # Store unique assert statements
         unique_asserts = set(assert_stmt.strip() for assert_stmt in all_asserts)
-        
+
+        #TODO: maybe reduce this or just return true/false 
         return len(unique_asserts) / total_asserts
 
 @dataclass
@@ -158,7 +166,6 @@ class RustToolResult:
     passed: bool
     stderr: str
     stdout: str
-    execution_time: float
 
 class RustTool:
     def __init__(self, name: str):
@@ -166,25 +173,18 @@ class RustTool:
 
     def run(self, project_dir: Path) -> RustToolResult:
         try:
-            start_time = time.time()
-            
             result = subprocess.run(
                 ["cargo", self.name, "--quiet"],
                 cwd=project_dir,
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=10
             )
-            
-            execution_time = time.time() - start_time
             
             return RustToolResult(
                 passed=result.returncode == 0,
                 stderr=result.stderr,
                 stdout=result.stdout,
-                execution_time=execution_time
             )
-        except subprocess.TimeoutExpired:
-            return RustToolResult(False, "Execution timed out", "", 60.0)
         except Exception as e:
-            return RustToolResult(False, str(e), "", 0.0)
+            return RustToolResult(False, str(e), "")

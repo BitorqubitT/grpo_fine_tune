@@ -9,7 +9,7 @@ from collections import deque
 
 class GRPO_agent():
 
-    def __init__(self, model, reference_model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=1e-5):
+    def __init__(self, model, reference_model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=5e-6):
         self.model = model
         self.reference_model = copy.deepcopy(reference_model).eval()
         #self.reference_model = reference_model
@@ -18,10 +18,13 @@ class GRPO_agent():
         self.tokenizer = tokenizer
         self.amount = amount_of_answers
         self.device = "cuda"
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
+        self.optimizer = optim.AdamW(self.model.parameters(),
+                                     lr=lr,
+                                     betas=(0.9, 0.99),
+                                     weight_decay=0.01)
         self.kl_clip = 0.1
-        self.clip_eps = 0.2   #Used in deepseek
-        self.kl_coef = 0.1 #Used in deepseek
+        self.clip_eps = 0.2
+        self.kl_coef = 0.1
         self.num_steps = 4
         self.losses = deque(maxlen=100)
 
@@ -52,9 +55,8 @@ class GRPO_agent():
             attention_mask=attention_mask,
             max_new_tokens=512,
             do_sample=True,
-            top_k=50,
-            top_p=0.95,
-            temperature=1.0,
+            top_p=0.90,
+            temperature=0.2,
             num_return_sequences=self.amount
         )
 

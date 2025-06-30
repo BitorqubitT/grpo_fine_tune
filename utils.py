@@ -79,7 +79,6 @@ def calc_advantages(rewards:list) -> torch.Tensor:
     return advantages
 
 def process_batch_rewards(batch_rewards, prompt, actions):
-    """Process rewards in batches for better efficiency"""
     rewards_keys = ['not empty',
                     'code block', 
                     'test block', 
@@ -99,8 +98,13 @@ def process_batch_rewards(batch_rewards, prompt, actions):
         row = [prompt,
                actions[i],
                total_reward,
+               rewards['not empty'],
+               rewards['code block'],
                rewards['test block'],
                rewards['asserts'],
+               rewards['build'],
+               rewards['clippy'],
+               rewards['test']
                ]
         rows.append(row)
 

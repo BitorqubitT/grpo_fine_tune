@@ -1,18 +1,15 @@
+import os
+import datasets
+import torch
+import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
-import datasets
 import torch.nn.functional as F
+from peft import LoraConfig, get_peft_model
 from grpo_agent import GRPO_agent
 from memory import Memory
 from utils import get_rewards, calc_advantages, process_batch_rewards
 from env import env
-import wandb
-import pandas as pd
-from peft import LoraConfig, get_peft_model
-import numpy as np
-import torch
-from utils import get_logprobs
-import os
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 
 device = "cuda"
@@ -40,20 +37,26 @@ model = get_peft_model(base_model, lora_config)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
+#df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 dataset = datasets.Dataset.from_pandas(df)
+dataset = dataset.shuffle(seed=1337)
 
-data_loader = DataLoader(dataset,
-                         batch_size = 1,
-                         shuffle = True
-                        )
+train_dataset = dataset.select(range(500, len(dataset)))
+
+train_dataset.save_to_disk("data/train_split")
+eval_dataset.save_to_disk("data/eval_split")
+
+#train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+print(len(train_dataset))
+data_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
 
 wandb.init(project = "llm finetune",
            name = f"experiment 9426"
             )
 
 memory = Memory(tokenizer, device)
-grpo_agent = GRPO_agent(model, base_model, tokenizer, SYSTEM_PROMPT, 3, memory)
+grpo_agent = GRPO_agent(model, base_model, tokenizer, SYSTEM_PROMPT, 4, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
 
 # If advantage is 0, we try again later.
