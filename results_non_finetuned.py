@@ -1,108 +1,116 @@
+import os
+import datasets
+import torch
+import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
-import datasets
-from utils import process_batch_rewards
+import torch.nn.functional as F
+from peft import LoraConfig, get_peft_model
+from grpo_agent import GRPO_agent
+from memory import Memory
+from utils import get_rewards, calc_advantages, process_batch_rewards
 from env import env
-import wandb
-import pandas as pd
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
-import numpy as np
+import pandas as pd
 
-# This script is used to run the non-finetuned models on the dataset.
-# This is used as a baseline to compare against the finetuned models.
+device = "cuda"
+#model_name = "Qwen/Qwen3-0.6b"
+#model_name = "Qwen/Qwen3-1.8b"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 
-def get_answer(prompt, chat_template, tokenizer, model, amount=1, device="cuda"):
-    messages = [
-        {"role": "system", "content": chat_template},
-        {"role": "user", "content": prompt}
-    ]
+tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=64,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    #target_modules="all-linear",
+    lora_dropout=0.1,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
 
-    model_inputs = tokenizer([text], return_tensors="pt", padding=True, return_attention_mask=True).to(device)
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    torch_dtype=torch.bfloat16).to(device)
 
-    generated_full_ids = model.generate(
-        input_ids=model_inputs.input_ids,
-        attention_mask=model_inputs.attention_mask,
-        #max_prompt_length= 256,
-        max_new_tokens = 1024,
-        #num_return_sequences = amount,
-        do_sample=True,
-        top_p=0.90,
-        temperature=0.2,
-    )
+model = get_peft_model(base_model, lora_config)
+reference_model = get_peft_model(base_model, lora_config)
+# Models are misaligned on purpose.
+#dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
+#df = pd.read_parquet("data/cargo_test_passed_train.parquet")
+df = pd.read_parquet("data/cargo_test_passed_train.parquet")
+dataset = datasets.Dataset.from_pandas(df)
+dataset = dataset.shuffle(seed=1337)
 
-    prompt_len = model_inputs.input_ids.shape[1]
-    generated_ids = [output_ids[prompt_len:] for output_ids in generated_full_ids]
-    
-    answers = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-    return answers
+train_dataset = dataset.select(range(500, len(dataset)))
 
-if __name__ == "__main__":
+train_dataset.save_to_disk("data/train_split")
 
-    device = "cuda" # the device to load the model onto
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+#train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+print(len(train_dataset))
+data_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype="auto",
-        device_map="auto"
-    )
-
-    #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
-    #df = pd.read_parquet("data/cargo_test_passed_train.parquet")
-    df = pd.read_parquet("data/results_code_and_tests.parquet")
-    print(df.shape)
-    dataset = datasets.Dataset.from_pandas(df)
-    dataset = dataset.shuffle(seed=1337)
-    
-    eval_dataset = dataset.select(range(500))
-    #train_dataset = dataset.select(range(500, len(dataset)))
-
-    #train_dataset.save_to_disk("data/train_split")
-    #eval_dataset.save_to_disk("data/eval_split")
-
-    eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
-
-    print(len(eval_dataset))
-    wandb.init(project = "llm finetune eval 344512",
-           name = f"eval set non-finetuned 3445123",
-           config = {
-                    "gamma": 5,
-                    }
+wandb.init(project = "llm finetune  21039",
+           name = f"experiment 9442426"
             )
 
-    columns = ['question',
-            'generated_code',
-            'total_reward',
-            'not empty',
-            'code block',
-            'test block',
-            'asserts',
-            'build',
-            'clippy',
-            'test'
-            ]
+memory = Memory(tokenizer, device)
+grpo_agent = GRPO_agent(model, reference_model, tokenizer, SYSTEM_PROMPT, 4, memory)
+env = env(CARGO_TOML_FILE, template_rs_file)
 
-    test_table = wandb.Table(columns = columns)
+# If advantage is 0, we try again later.
+skipped_prompts = []
 
-    env = env(CARGO_TOML_FILE, template_rs_file)
-    for k, batch in enumerate(eval_loader):
-        prompt = batch['rust_prompt'][0]
+for k, batch in enumerate(data_loader):
+    print(k)
 
-        action = get_answer(prompt, SYSTEM_PROMPT, tokenizer, model, amount=1, device=device)
+    if k == 3000:
+        break
 
+    #TODO: change this so we also have 
+    for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
+        # str answer, prompt id, prompt+answerids, answer_ids
+        action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
+        if sum(total_rewards)/len(total_rewards) == 1:
+            print(total_rewards)
+            skipped_prompts.append(task_id)
+            break
         
-        for row in table_rows:
-            test_table.add_data(*row)
-        wandb.log({"total_reward": np.mean(total_rewards)})
+        advantages = calc_advantages(total_rewards)
+        if sum(advantages)/advantages.shape[0] == advantages[0]:
+            print(advantages)
+            skipped_prompts.append(task_id)
+            break
 
-    wandb.log({"test_table": test_table})
-    wandb.finish() 
+        print(f"Prompt ID: {task_id}, total_rewards: {total_rewards}, advantages: {advantages}")
+
+        for i in range(4): # sample size
+            full_input_ids = generated_full_ids[i]
+            generated_id = generated_ids[i]
+            memory.add_sample(full_input_ids, generated_id, advantages)
+
+    if len(memory.buffer) < 6:
+        print("Not six so we skip")
+        continue
+    else:
+        logging = grpo_agent.optimise_network()
+
+        for row in logging:
+            wandb.log({"step": row[0],
+                    "loss": row[1],
+                    "kl_loss": row[2],
+                    "mean_advantage:": sum(advantages)/advantages.shape[0],
+                    # TODO: change this to moving average?
+                    "average_loss": row[3]})
+                    
+        if k == 50:
+            grpo_agent.update_reference_model()
+
+        memory.clear()
+
+print(len(skipped_prompts))
+wandb.finish()

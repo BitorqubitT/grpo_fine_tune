@@ -11,7 +11,7 @@ class GRPO_agent():
 
     def __init__(self, model, reference_model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=5e-6):
         self.model = model
-        self.reference_model = copy.deepcopy(reference_model).eval()
+        self.reference_model = reference_model.eval()
         #self.reference_model = reference_model
         self.memory = memory
         self.chat_template = chat_template
@@ -90,6 +90,20 @@ class GRPO_agent():
         # 4 to 8
         logging_metrics = []
 
+
+        print(len(self.memory.buffer), "samples in memory")
+        
+        # Current memory allocated by tensors
+        print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+        # Total memory reserved by caching allocator (includes fragmentation, etc.)
+        print(f"Reserved memory: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
+        # Max memory allocated so far (peak usage)
+        print(f"Max allocated memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+        print(f"Max reserved memory: {torch.cuda.max_memory_reserved() / 1024**3:.2f} GB")
+
+
         for step in range(self.num_steps):
             new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
             
@@ -97,7 +111,7 @@ class GRPO_agent():
             # Look at advanatage of doing it per token
             #print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
 
-            print("----------------------- new step ----------------------------")
+            #print("----------------------- new step ----------------------------")
             ratio = torch.exp(new_logprobs - old_logprobs)
 
             # PPO-style clipped loss
@@ -110,7 +124,7 @@ class GRPO_agent():
 
             # Normalize: mean over non-masked tokens
             policy_loss = per_token_loss.sum(dim=1).mean()
-            print("policy_loss:", policy_loss.item())
+            #print("policy_loss:", policy_loss.item())
 
             #TODO: Put in ref mode
             with torch.no_grad():
@@ -118,10 +132,10 @@ class GRPO_agent():
 
             kl_div = new_logprobs - ref_logprobs
             kl_loss = torch.mean(kl_div)
-            print("kl_loss:", kl_loss.item())
+            #print("kl_loss:", kl_loss.item())
             total_loss = policy_loss + self.kl_coef * kl_loss
 
-            print("total_loss:", total_loss.item())
+            #print("total_loss:", total_loss.item())
 
             self.optimizer.zero_grad()
             total_loss.backward()
