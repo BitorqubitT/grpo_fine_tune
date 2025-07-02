@@ -62,7 +62,7 @@ env = env(CARGO_TOML_FILE, template_rs_file)
 
 # If advantage is 0, we try again later.
 skipped_prompts = []
-
+optimise_steps = 0
 for k, batch in enumerate(data_loader):
     print(k)
 
@@ -93,12 +93,12 @@ for k, batch in enumerate(data_loader):
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
 
-    if len(memory.buffer) < 6:
-        print("Not six so we skip")
+    if len(memory.buffer) < 8:
+        print("Not 8 so we skip")
         continue
     else:
         logging = grpo_agent.optimise_network()
-
+        optimise_steps += 1
         for row in logging:
             wandb.log({"step": row[0],
                     "loss": row[1],
@@ -107,7 +107,7 @@ for k, batch in enumerate(data_loader):
                     # TODO: change this to moving average?
                     "average_loss": row[3]})
                     
-        if k == 50:
+        if optimise_steps == 40:
             grpo_agent.update_reference_model()
 
         memory.clear()

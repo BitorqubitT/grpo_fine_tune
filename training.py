@@ -45,7 +45,6 @@ dataset = dataset.shuffle(seed=1337)
 train_dataset = dataset.select(range(500, len(dataset)))
 
 train_dataset.save_to_disk("data/train_split")
-eval_dataset.save_to_disk("data/eval_split")
 
 #train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
 print(len(train_dataset))
@@ -75,6 +74,7 @@ for k, batch in enumerate(data_loader):
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
         if sum(total_rewards)/len(total_rewards) == 1:
+            print(total_rewards)
             skipped_prompts.append(task_id)
             continue
         

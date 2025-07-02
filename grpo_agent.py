@@ -6,6 +6,7 @@ from torch.nn.utils.rnn import pad_sequence
 import gc
 import copy
 from collections import deque
+from transformers import get_linear_schedule_with_warmup
 
 class GRPO_agent():
 
@@ -27,6 +28,13 @@ class GRPO_agent():
         self.kl_coef = 0.1
         self.num_steps = 4
         self.losses = deque(maxlen=100)
+        self.scheduler = get_linear_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=1500,  # Adjust as needed
+            #TODO: calculate the real steps
+            num_training_steps=15000  # Adjust as needed
+        )
+        self.accumulation_steps = 1
 
     def get_action(self, prompt) -> tuple:
         """
@@ -76,80 +84,69 @@ class GRPO_agent():
         return avg_loss
 
     def optimise_network(self):
-        input_ids, actions, advantages = self.memory.get_values()
-        old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
-        policy_loss = 0.0
 
-        selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
-        filtered = advantages[selected_rows]
-        
-        advantages = filtered.view(-1)
-        action_mask = (actions != -100).float()
-        # We do this because we have logprobs per token
-        advantages = advantages.unsqueeze(1) * action_mask  # [B, S] -> [B, S] with actions masked 
-        # 4 to 8
-        logging_metrics = []
+        for i in range(2):
 
+            input_ids, actions, advantages = self.memory.get_value_per_batch(i)
+            old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
+            policy_loss = 0.0
 
-        print(len(self.memory.buffer), "samples in memory")
-        
-        # Current memory allocated by tensors
-        print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-        # Total memory reserved by caching allocator (includes fragmentation, etc.)
-        print(f"Reserved memory: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-
-        # Max memory allocated so far (peak usage)
-        print(f"Max allocated memory: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
-        print(f"Max reserved memory: {torch.cuda.max_memory_reserved() / 1024**3:.2f} GB")
-
-
-        for step in range(self.num_steps):
-            new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
+            selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
+            filtered = advantages[selected_rows]
             
-            # We currently use total logprobs, so for the whole sequence.
-            # Look at advanatage of doing it per token
-            #print(f"[GPU] Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+            advantages = filtered.view(-1)
+            action_mask = (actions != -100).float()
+            # We do this because we have logprobs per token
+            advantages = advantages.unsqueeze(1) * action_mask  # [B, S] -> [B, S] with actions masked 
+            # 4 to 8
+            logging_metrics = []
 
-            #print("----------------------- new step ----------------------------")
-            ratio = torch.exp(new_logprobs - old_logprobs)
 
-            # PPO-style clipped loss
-            clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
-            loss_unclipped = ratio * advantages
-            loss_clipped = clipped_ratio * advantages
-
-            per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
-            #TODO: Check if this is still useful
-
-            # Normalize: mean over non-masked tokens
-            policy_loss = per_token_loss.sum(dim=1).mean()
-            #print("policy_loss:", policy_loss.item())
-
-            #TODO: Put in ref mode
-            with torch.no_grad():
-                ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
-
-            kl_div = new_logprobs - ref_logprobs
-            kl_loss = torch.mean(kl_div)
-            #print("kl_loss:", kl_loss.item())
-            total_loss = policy_loss + self.kl_coef * kl_loss
-
-            #print("total_loss:", total_loss.item())
-
-            self.optimizer.zero_grad()
-            total_loss.backward()
-            self.optimizer.step() 
-
-            average_loss = self.update_loss(total_loss.item())
-
-            logging_metrics.append([step, total_loss, kl_loss, average_loss])
-
+            print(len(self.memory.buffer), "samples in memory")
             
-            with torch.no_grad():
-                del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss
-            
-            gc.collect()
-            torch.cuda.empty_cache()
+            for step in range(1):
+                new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
+                
+                ratio = torch.exp(new_logprobs - old_logprobs)
+
+                # PPO-style clipped loss
+                clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
+                loss_unclipped = ratio * advantages
+                loss_clipped = clipped_ratio * advantages
+
+                per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
+
+                # Normalize: mean over non-masked tokens
+                policy_loss = per_token_loss.sum(dim=1).mean()
+
+                #TODO: Put in ref mode
+                with torch.no_grad():
+                    ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+
+                kl_div = new_logprobs - ref_logprobs
+                kl_loss = torch.mean(kl_div)
+                #print("kl_loss:", kl_loss.item())
+                total_loss = policy_loss + self.kl_coef * kl_loss
+                total_loss = total_loss / self.accumulation_steps
+                #print("total_loss:", total_loss.item())
+
+                total_loss.backward()
+                
+
+                if i + 1 == self.accumulation_steps:
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+
+                    average_loss = self.update_loss(total_loss.item())
+                    print(average_loss, "average loss")
+                    logging_metrics.append([step, total_loss, kl_loss, average_loss])
+
+                
+                    with torch.no_grad():
+                        del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss, average_loss, per_token_loss
+                    
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
         return logging_metrics

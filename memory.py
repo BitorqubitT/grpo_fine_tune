@@ -51,3 +51,32 @@ class Memory:
         return (input_ids_padded.to(self.device),
                 actions_aligned.to(self.device),
                 advantages.to(self.device))
+    
+    def get_value_per_batch(self, batch_number):
+        """
+        Returns padded tensors:
+        - input_ids: LongTensor [B, max_seq_len]
+        - actions: LongTensor [B, max_seq_len], aligned with input_ids (response tokens only, rest = -100)
+        - advantages: FloatTensor [B]
+        """
+        if len(self.buffer) == 0:
+            return None, None, None
+
+        #TODO: FiX UGLy codE
+        input_ids_list = [sample["input_ids"] for sample in self.buffer[4*batch_number:((batch_number+1)*4)+1]]
+        response_ids_list = [sample["actions"] for sample in self.buffer[4*batch_number:((batch_number+1)*4)+1]]
+        advantages = torch.stack([sample["advantage"] for sample in self.buffer[4*batch_number:((batch_number+1)*4)+1]])
+
+        input_ids_padded = pad_sequence(input_ids_list, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+
+        max_seq_len = input_ids_padded.size(1)
+        actions_aligned = torch.full((len(input_ids_list), max_seq_len), -100, dtype=torch.long)
+
+        for i, (full_ids, response_ids) in enumerate(zip(input_ids_list, response_ids_list)):
+            prompt_len = full_ids.size(0) - response_ids.size(0)
+            actions_aligned[i, prompt_len:prompt_len + response_ids.size(0)] = response_ids
+
+        return (input_ids_padded.to(self.device),
+                actions_aligned.to(self.device),
+                advantages.to(self.device))
+    
