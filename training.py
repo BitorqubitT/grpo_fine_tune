@@ -11,11 +11,15 @@ from memory import Memory
 from utils import get_rewards, calc_advantages, process_batch_rewards
 from env import env
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
+import pandas as pd
 
 device = "cuda"
 #model_name = "Qwen/Qwen3-0.6b"
 #model_name = "Qwen/Qwen3-1.8b"
 model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+
+AMOUNT_OF_SAMPLES = 4
+AMOUNT_OF_PROMPTS = 2
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
@@ -34,6 +38,7 @@ base_model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16).to(device)
 
 model = get_peft_model(base_model, lora_config)
+reference_model = get_peft_model(base_model, lora_config)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
@@ -50,15 +55,14 @@ train_dataset.save_to_disk("data/train_split")
 print(len(train_dataset))
 data_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
 
-wandb.init(project = "llm finetune",
-           name = f"experiment 9426"
+wandb.init(project = "llm finetune 2983129",
+           name = f"experiment 9426123"
             )
 
-memory = Memory(tokenizer, device)
-grpo_agent = GRPO_agent(model, base_model, tokenizer, SYSTEM_PROMPT, 4, memory)
+memory = Memory(tokenizer, device, AMOUNT_OF_SAMPLES, AMOUNT_OF_PROMPTS)
+grpo_agent = GRPO_agent(model, reference_model, tokenizer, SYSTEM_PROMPT, AMOUNT_OF_SAMPLES, memory)
 env = env(CARGO_TOML_FILE, template_rs_file)
 
-# If advantage is 0, we try again later.
 skipped_prompts = []
 
 for k, batch in enumerate(data_loader):
@@ -80,18 +84,19 @@ for k, batch in enumerate(data_loader):
         
         advantages = calc_advantages(total_rewards)
         if sum(advantages)/advantages.shape[0] == advantages[0]:
+            print(" no bueno")
+            print(total_rewards)
             skipped_prompts.append(task_id)
             continue
 
         print(f"Prompt ID: {task_id}, total_rewards: {total_rewards}, advantages: {advantages}")
 
-        for i in range(3): # sample size
+        for i in range(4): # sample size
             full_input_ids = generated_full_ids[i]
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
 
-    if len(memory.buffer) <= 6:
-        print("Not six so we skip")
+    if len(memory.buffer) < 8:
         continue
 
     else:

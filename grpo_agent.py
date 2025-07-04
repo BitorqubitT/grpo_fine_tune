@@ -34,7 +34,7 @@ class GRPO_agent():
             #TODO: calculate the real steps
             num_training_steps=15000  # Adjust as needed
         )
-        self.accumulation_steps = 1
+        self.accumulation_steps = 2
 
     def get_action(self, prompt) -> tuple:
         """
@@ -84,27 +84,26 @@ class GRPO_agent():
         return avg_loss
 
     def optimise_network(self):
-
+        accumulated_steps = 0
         for i in range(2):
 
             input_ids, actions, advantages = self.memory.get_value_per_batch(i)
             old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
             policy_loss = 0.0
-
             selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
             filtered = advantages[selected_rows]
             
             advantages = filtered.view(-1)
             action_mask = (actions != -100).float()
             # We do this because we have logprobs per token
+            
             advantages = advantages.unsqueeze(1) * action_mask  # [B, S] -> [B, S] with actions masked 
             # 4 to 8
             logging_metrics = []
 
+            print("max gpu used", torch.cuda.max_memory_allocated() / 1024**3, "GB")
 
-            print(len(self.memory.buffer), "samples in memory")
-            
-            for step in range(1):
+            for step in range(4):
                 new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
                 
                 ratio = torch.exp(new_logprobs - old_logprobs)
@@ -125,15 +124,19 @@ class GRPO_agent():
 
                 kl_div = new_logprobs - ref_logprobs
                 kl_loss = torch.mean(kl_div)
-                #print("kl_loss:", kl_loss.item())
+                print("kl_loss:", kl_loss.item())
                 total_loss = policy_loss + self.kl_coef * kl_loss
+                print("policy loss", policy_loss.item())
                 total_loss = total_loss / self.accumulation_steps
-                #print("total_loss:", total_loss.item())
+                print("total_loss:", total_loss.item())
 
                 total_loss.backward()
                 
-
-                if i + 1 == self.accumulation_steps:
+                accumulated_steps += 1
+                print(accumulated_steps)
+                #if i + 1 == self.accumulation_steps:
+                if accumulated_steps % (8) == 0:
+                    print("----------------------------------------------------------------")
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
@@ -148,5 +151,5 @@ class GRPO_agent():
                     
                     gc.collect()
                     torch.cuda.empty_cache()
-
+        print("out this function")
         return logging_metrics
