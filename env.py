@@ -149,7 +149,8 @@ class env():
 
         # Find all assert statements
         assert_pattern = r'assert(?:_eq)?\!(.*?);'
-        all_asserts = re.findall(assert_pattern, test_block)
+        #TODO: Check if this fixes the assert detection
+        all_asserts = re.findall(assert_pattern, test_block, re.DOTALL)
         total_asserts = len(all_asserts)
         
         if total_asserts == 0:
