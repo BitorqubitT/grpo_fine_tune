@@ -137,8 +137,28 @@ class env():
         if match:
             return True
         return False
+    
+    def _response_contains_asserts(self, rust_code: str):
+        """
+        Extracts the test module from Rust code, counts assert statements,
+        and checks if they are unique.
+        """
+        # Extract content inside `mod tests { ... }`
+        test_block_pattern = r'#\[cfg\(test\)\](.*?)```'
+        test_modules = re.findall(test_block_pattern, rust_code, re.DOTALL)
+        print(len(test_modules))
+        if not test_modules:
+            return 0.0
 
-    def _response_contains_asserts(self, code: str) -> float:
+        assert_pattern = r'assert(?:_eq)?\!(.*?);'
+        asserts = re.findall(assert_pattern, test_modules[0], re.DOTALL)
+        num_asserts = len(asserts)
+        num_unique_asserts = len(set(asserts))
+        if num_asserts == 0.0:
+            return 0.0
+        return num_asserts / num_unique_asserts
+
+    def _response_contains_asserts2(self, code: str) -> float:
         pattern = r'#\[cfg\(test\)\]\s*mod\s+tests\s*\{([^}]*)\}'
         match = re.search(pattern, code, re.DOTALL)
 

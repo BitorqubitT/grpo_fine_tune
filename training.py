@@ -35,6 +35,8 @@ lora_config = LoraConfig(
 base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
+    #TODO: Use in cloud build
+    #attn_implementation="flash_attention_2",
     torch_dtype=torch.bfloat16).to(device)
 
 model = get_peft_model(base_model, lora_config)
