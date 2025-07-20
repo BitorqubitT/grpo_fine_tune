@@ -1,10 +1,7 @@
 import torch
 import torch.optim as optim
-from torch.nn.functional import kl_div, log_softmax
 from utils import get_logprobs
-from torch.nn.utils.rnn import pad_sequence
 import gc
-import copy
 from collections import deque
 from transformers import get_linear_schedule_with_warmup
 
@@ -13,7 +10,6 @@ class GRPO_agent():
     def __init__(self, model, reference_model, tokenizer, chat_template: str, amount_of_answers: int = 5, memory=None, lr=5e-6):
         self.model = model
         self.reference_model = reference_model.eval()
-        #self.reference_model = reference_model
         self.memory = memory
         self.chat_template = chat_template
         self.tokenizer = tokenizer
@@ -60,10 +56,10 @@ class GRPO_agent():
         generated_full_ids = self.model.generate(
             model_inputs.input_ids,
             attention_mask=attention_mask,
-            max_new_tokens=512,
+            max_new_tokens=1024,
             do_sample=True,
             top_p=0.90,
-            temperature=0.7,
+            temperature=0.9,
             num_return_sequences=self.amount
         )
 

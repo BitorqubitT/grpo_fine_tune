@@ -23,10 +23,11 @@ AMOUNT_OF_PROMPTS = 2
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
 lora_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    lora_dropout=0.1,
+    r=16,
+    lora_alpha=64,
+    #target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
+    lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM",
 )
@@ -77,8 +78,8 @@ average_total_loss = []
 updates = 0
 
 for k, batch in enumerate(data_loader):
-
-    #TODO: change this so we also have 
+    print("Batch number:", k)
+    
     for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
         # str answer, prompt id, prompt+answerids, answer_ids
         action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
@@ -139,4 +140,3 @@ grpo_agent.save("final")
     
 print(len(skipped_prompts))
 wandb.finish()
-
