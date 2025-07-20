@@ -34,7 +34,7 @@ class GRPO_agent():
             #TODO: calculate the real steps
             num_training_steps=15000  # Adjust as needed
         )
-        self.accumulation_steps = 2
+        self.backwards_steps_per_update = 8
 
     def get_action(self, prompt) -> tuple:
         """
@@ -43,7 +43,6 @@ class GRPO_agent():
         generated_ids: what the model did aka answer
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
-
         messages = [
             {"role": "system", "content": self.chat_template},
             {"role": "user", "content": prompt}
@@ -64,7 +63,7 @@ class GRPO_agent():
             max_new_tokens=512,
             do_sample=True,
             top_p=0.90,
-            temperature=0.2,
+            temperature=0.7,
             num_return_sequences=self.amount
         )
 
@@ -83,73 +82,77 @@ class GRPO_agent():
         avg_loss = sum(self.losses) / len(self.losses)
         return avg_loss
 
+    def save(self, iteration: str):
+        torch.save(self.model.state_dict(), "saved_models/grpo_" + iteration + ".pth")
+
     def optimise_network(self):
         accumulated_steps = 0
-        for i in range(2):
+        num_batches = 2
+        policy_loss_history = []
+        kl_loss_history = []
+        for i in range(num_batches):
 
             input_ids, actions, advantages = self.memory.get_value_per_batch(i)
-            old_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad=True)
-            policy_loss = 0.0
-            selected_rows = torch.arange(0, advantages.size(0), self.amount, device=advantages.device)
-            filtered = advantages[selected_rows]
-            
-            advantages = filtered.view(-1)
+            # TODO: SHOULD THIS BE REFERENCE MODEL?
+            with torch.no_grad():
+                old_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, use_no_grad=True)
+
+            # WATCH the shapes when we use different batching sizes.
+            advantages = advantages[0].view(-1, 1)
             action_mask = (actions != -100).float()
-            # We do this because we have logprobs per token
-            
-            advantages = advantages.unsqueeze(1) * action_mask  # [B, S] -> [B, S] with actions masked 
-            # 4 to 8
-            logging_metrics = []
+            advantages = advantages * action_mask
 
             print("max gpu used", torch.cuda.max_memory_allocated() / 1024**3, "GB")
 
-            for step in range(4):
-                new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, False)
-                
+            for _ in range(4):
+                new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad = False)
                 ratio = torch.exp(new_logprobs - old_logprobs)
-
                 # PPO-style clipped loss
                 clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
                 loss_unclipped = ratio * advantages
                 loss_clipped = clipped_ratio * advantages
-
                 per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
+                print("per_token_loss mean:", per_token_loss.mean().item())
+                print("per_token_loss shape:", per_token_loss.shape)
 
-                # Normalize: mean over non-masked tokens
                 policy_loss = per_token_loss.sum(dim=1).mean()
-
-                #TODO: Put in ref mode
                 with torch.no_grad():
-                    ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+                    #ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
+                    #TODO: Is this correct?
+                    ref_logprobs = old_logprobs
 
                 kl_div = new_logprobs - ref_logprobs
                 kl_loss = torch.mean(kl_div)
-                print("kl_loss:", kl_loss.item())
+                print("kl_loss:", kl_loss.float().item())
                 total_loss = policy_loss + self.kl_coef * kl_loss
-                print("policy loss", policy_loss.item())
-                total_loss = total_loss / self.accumulation_steps
-                print("total_loss:", total_loss.item())
-
+                print("policy loss", policy_loss.float().item())
+                total_loss = total_loss / self.backwards_steps_per_update
+                print("total_loss:", total_loss.float().item())
+                
+                policy_loss_history.append(policy_loss.item())
+                kl_loss_history.append(kl_loss.item())
+                
                 total_loss.backward()
                 
                 accumulated_steps += 1
-                print(accumulated_steps)
-                #if i + 1 == self.accumulation_steps:
-                if accumulated_steps % (8) == 0:
-                    print("----------------------------------------------------------------")
+                if accumulated_steps % (self.backwards_steps_per_update) == 0:
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
-                    average_loss = self.update_loss(total_loss.item())
-                    print(average_loss, "average loss")
-                    logging_metrics.append([step, total_loss, kl_loss, average_loss])
+                    # Logging total and kl loss like this is useless.
+                    mean_policy_loss = sum(policy_loss_history) / len(policy_loss_history)
+                    mean_kl_loss = sum(kl_loss_history) / len(kl_loss_history)
+                    logging_metrics = [total_loss.float().item(),
+                                       kl_loss.float().item(),
+                                       mean_policy_loss,
+                                       mean_kl_loss]
 
-                
-                    with torch.no_grad():
-                        del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss, average_loss, per_token_loss
-                    
+                    del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss
+                    del ref_logprobs, kl_div, kl_loss, per_token_loss, loss_unclipped, loss_clipped
+                    #del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss, per_token_loss
                     gc.collect()
                     torch.cuda.empty_cache()
+
         print("out this function")
         return logging_metrics

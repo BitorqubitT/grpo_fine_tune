@@ -139,3 +139,9 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
     selected_logprobs = selected * action_mask  # Zero out padding
 
     return selected_logprobs
+
+def check_loss_logging(average_total_loss):
+    if len(average_total_loss) < 100:
+        return sum(average_total_loss) / len(average_total_loss)
+    else:
+        return sum(average_total_loss) / 100

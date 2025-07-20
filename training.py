@@ -8,15 +8,14 @@ import torch.nn.functional as F
 from peft import LoraConfig, get_peft_model
 from grpo_agent import GRPO_agent
 from memory import Memory
-from utils import get_rewards, calc_advantages, process_batch_rewards
+from utils import get_rewards, calc_advantages, process_batch_rewards, check_loss_logging
 from env import env
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 import pandas as pd
 
 device = "cuda"
-#model_name = "Qwen/Qwen3-0.6b"
-#model_name = "Qwen/Qwen3-1.8b"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
 AMOUNT_OF_SAMPLES = 4
 AMOUNT_OF_PROMPTS = 2
@@ -40,7 +39,16 @@ base_model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16).to(device)
 
 model = get_peft_model(base_model, lora_config)
-reference_model = get_peft_model(base_model, lora_config)
+
+# Use this otherwise we get warning about stacking lora
+reference_base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    #TODO: Use in cloud build
+    #attn_implementation="flash_attention_2",
+    torch_dtype=torch.bfloat16).to(device)
+
+reference_model = get_peft_model(reference_base_model, lora_config)
 
 # Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
@@ -54,7 +62,6 @@ train_dataset = dataset.select(range(500, len(dataset)))
 train_dataset.save_to_disk("data/train_split")
 
 #train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-print(len(train_dataset))
 data_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
 
 wandb.init(project = "llm finetune 2983129",
@@ -66,12 +73,10 @@ grpo_agent = GRPO_agent(model, reference_model, tokenizer, SYSTEM_PROMPT, AMOUNT
 env = env(CARGO_TOML_FILE, template_rs_file)
 
 skipped_prompts = []
+average_total_loss = []
+updates = 0
 
 for k, batch in enumerate(data_loader):
-    print(k)
-
-    if k == 3000:
-        break
 
     #TODO: change this so we also have 
     for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
@@ -80,14 +85,11 @@ for k, batch in enumerate(data_loader):
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
         if sum(total_rewards)/len(total_rewards) == 1:
-            print(total_rewards)
             skipped_prompts.append(task_id)
             continue
         
         advantages = calc_advantages(total_rewards)
         if sum(advantages)/advantages.shape[0] == advantages[0]:
-            print(" no bueno")
-            print(total_rewards)
             skipped_prompts.append(task_id)
             continue
 
@@ -102,20 +104,39 @@ for k, batch in enumerate(data_loader):
         continue
 
     else:
-
+        updates += 1
         logging = grpo_agent.optimise_network()
+        print("Logging metrics:", logging)
+        # Average total loss of that episode
 
-        for row in logging:
-            wandb.log({"step": row[0],
-                    "loss": row[1],
-                    "kl_loss": row[2],
-                    "mean_advantage:": sum(advantages)/advantages.shape[0],
+        #logging_metrics.append([total_loss, kl_loss, average_loss])
+        if len(average_total_loss) < 100:
+            average_total_loss.append(logging[0])
+        else:
+            average_total_loss.pop(0)
+            average_total_loss.append(logging[0])
+
+        print(" -------- ", advantages, sum(advantages), advantages.shape[0])
+        wandb.log({"Average total loss over last 100 runs": check_loss_logging(average_total_loss),
+                    "kl_loss": logging[1],
+                    "mean_rewards:": sum(total_rewards)/len(total_rewards),
                     # TODO: change this to moving average?
-                    "average_loss": row[3]})
-        if k == 50:
+                    "mean_policy_loss": logging[2],
+                    "mean_kl_loss": logging[3]})
+        
+        if updates == 100:
+            print("Updating reference model")
             grpo_agent.update_reference_model()
+            updates = 0
 
         memory.clear()
 
+    if k % 1000 == 0:
+        print("Saving model")
+        grpo_agent.save(str(k))
+
+grpo_agent.save("final")
+    
 print(len(skipped_prompts))
 wandb.finish()
+
