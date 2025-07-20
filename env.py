@@ -115,7 +115,8 @@ class env():
         return results
     
     def _extract_rust_code(self, text: str) -> Optional[str]:
-        pattern = r'```rust\n(.*?)\n```'
+        #pattern = r'```rust\n(.*?)\n```'
+        pattern = r'```rust\s*\n(.*?)```'
         match = re.search(pattern, text, re.DOTALL)
         if match:
             return match.group(1)
@@ -143,10 +144,8 @@ class env():
         Extracts the test module from Rust code, counts assert statements,
         and checks if they are unique.
         """
-        # Extract content inside `mod tests { ... }`
         test_block_pattern = r'#\[cfg\(test\)\](.*?)```'
         test_modules = re.findall(test_block_pattern, rust_code, re.DOTALL)
-        print(len(test_modules))
         if not test_modules:
             return 0.0
 
@@ -167,7 +166,6 @@ class env():
         
         test_block = match.group(0)
 
-        # Find all assert statements
         assert_pattern = r'assert(?:_eq)?\!(.*?);'
         #TODO: Check if this fixes the assert detection
         all_asserts = re.findall(assert_pattern, test_block, re.DOTALL)
