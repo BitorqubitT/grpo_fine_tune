@@ -51,7 +51,6 @@ reference_base_model = AutoModelForCausalLM.from_pretrained(
 
 reference_model = get_peft_model(reference_base_model, lora_config)
 
-# Models are misaligned on purpose.
 #dataset = datasets.load_dataset("TIGER-Lab/AceCode-87K", split='train')
 #df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 df = pd.read_parquet("data/cargo_test_passed_train.parquet")
