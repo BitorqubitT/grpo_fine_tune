@@ -51,17 +51,19 @@ class GRPO_agent():
         )
 
         model_inputs = self.tokenizer([text], return_tensors="pt", padding=True).to(self.device)
-        attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
+        #attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
 
-        generated_full_ids = self.model.generate(
-            model_inputs.input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=1024,
-            do_sample=True,
-            top_p=0.90,
-            temperature=0.9,
-            num_return_sequences=self.amount
-        )
+        with torch.inference_mode():
+            generated_full_ids = self.model.generate(
+                **model_inputs,
+                #model_inputs.input_ids,
+                #attention_mask=attention_mask,
+                max_new_tokens=1024,
+                do_sample=True,
+                top_p=0.90,
+                temperature=0.9,
+                num_return_sequences=self.amount
+            )
 
         prompt_len = model_inputs.input_ids.shape[1]
         generated_ids = [output_ids[prompt_len:] for output_ids in generated_full_ids]
@@ -84,7 +86,7 @@ class GRPO_agent():
     def optimise_network(self):
         accumulated_steps = 0
         num_batches = 2
-        policy_loss_history = []
+        total_loss_history = []
         kl_loss_history = []
         for i in range(num_batches):
 
@@ -98,7 +100,7 @@ class GRPO_agent():
             action_mask = (actions != -100).float()
             advantages = advantages * action_mask
 
-            print("max gpu used", torch.cuda.max_memory_allocated() / 1024**3, "GB")
+            #print("max gpu used", torch.cuda.max_memory_allocated() / 1024**3, "GB")
 
             for _ in range(4):
                 new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad = False)
@@ -108,8 +110,6 @@ class GRPO_agent():
                 loss_unclipped = ratio * advantages
                 loss_clipped = clipped_ratio * advantages
                 per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
-                print("per_token_loss mean:", per_token_loss.mean().item())
-                print("per_token_loss shape:", per_token_loss.shape)
 
                 policy_loss = per_token_loss.sum(dim=1).mean()
                 with torch.no_grad():
@@ -119,13 +119,13 @@ class GRPO_agent():
 
                 kl_div = new_logprobs - ref_logprobs
                 kl_loss = torch.mean(kl_div)
-                print("kl_loss:", kl_loss.float().item())
+                #print("kl_loss:", kl_loss.float().item())
                 total_loss = policy_loss + self.kl_coef * kl_loss
-                print("policy loss", policy_loss.float().item())
+                #print("policy loss", policy_loss.float().item())
                 total_loss = total_loss / self.backwards_steps_per_update
-                print("total_loss:", total_loss.float().item())
+                #print("total_loss:", total_loss.float().item())
                 
-                policy_loss_history.append(policy_loss.item())
+                total_loss_history.append(total_loss.item())
                 kl_loss_history.append(kl_loss.item())
                 
                 total_loss.backward()
@@ -137,9 +137,10 @@ class GRPO_agent():
                     self.optimizer.zero_grad()
 
                     # Logging total and kl loss like this is useless.
-                    mean_policy_loss = sum(policy_loss_history) / len(policy_loss_history)
+                    mean_policy_loss = sum(total_loss_history) / len(total_loss_history)
                     mean_kl_loss = sum(kl_loss_history) / len(kl_loss_history)
                     logging_metrics = [total_loss.float().item(),
+                                       policy_loss.float().item(),
                                        kl_loss.float().item(),
                                        mean_policy_loss,
                                        mean_kl_loss]
@@ -150,5 +151,5 @@ class GRPO_agent():
                     gc.collect()
                     torch.cuda.empty_cache()
 
-        print("out this function")
+        #print("out this function")
         return logging_metrics
