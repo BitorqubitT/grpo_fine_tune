@@ -4,6 +4,9 @@ from utils import get_logprobs
 import gc
 from collections import deque
 from transformers import get_linear_schedule_with_warmup
+import time
+import copy
+from peft import PeftModel
 
 class GRPO_agent():
 
@@ -30,7 +33,7 @@ class GRPO_agent():
             #TODO: calculate the real steps
             num_training_steps=15000  # Adjust as needed
         )
-        self.backwards_steps_per_update = 8
+        self.backwards_steps_per_update = 4
 
     def get_action(self, prompt) -> tuple:
         """
@@ -39,20 +42,24 @@ class GRPO_agent():
         generated_ids: what the model did aka answer
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
+        t0 = time.time()
         messages = [
             {"role": "system", "content": self.chat_template},
             {"role": "user", "content": prompt}
         ]
 
+        t1 = time.time()
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
 
+        t2 = time.time()
         model_inputs = self.tokenizer([text], return_tensors="pt", padding=True).to(self.device)
         #attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
 
+        t2 = time.time()
         with torch.inference_mode():
             generated_full_ids = self.model.generate(
                 **model_inputs,
@@ -65,11 +72,91 @@ class GRPO_agent():
                 num_return_sequences=self.amount
             )
 
+        t3 = time.time()
         prompt_len = model_inputs.input_ids.shape[1]
         generated_ids = [output_ids[prompt_len:] for output_ids in generated_full_ids]
 
+        t4 = time.time()
         answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        t5 = time.time()
+
+        print(
+        f"[get_action timings] message_prep={t1 - t0:.2f}s | "
+        f"template_apply={t2 - t1:.2f}s | "
+        f"generation={t3 - t2:.2f}s | "
+        f"postproc_decode={t5 - t4:.2f}s"
+        )
         return answers, model_inputs.input_ids, generated_full_ids, generated_ids
+
+    def get_action_bish(self, prompt) -> tuple:
+        """
+        answers:  human-readable text (useful for logging or reward computation)
+        model_inputs.input_ids: prompt
+        generated_ids: what the model did aka answer
+        generated_full_ids: full sequence, useful for recovering the original generation context
+        """
+        t0 = time.time()
+        # Deep copy (to keep training model intact)
+        model_for_inference = copy.deepcopy(self.model)
+
+        # Merge LoRA weights into base model
+        model_for_inference = model_for_inference.merge_and_unload()
+        model_for_inference.eval()  # important for dropout etc.
+        model = torch.compile(model_for_inference)
+
+        messages = [
+            {"role": "system", "content": self.chat_template},
+            {"role": "user", "content": prompt}
+        ]
+
+        t1 = time.time()
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        t2 = time.time()
+        model_inputs = self.tokenizer([text], return_tensors="pt", padding=True).to(self.device)
+        #attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
+
+        t2 = time.time()
+        with torch.inference_mode():
+            generated_full_ids = model.generate(
+                **model_inputs,
+                #model_inputs.input_ids,
+                #attention_mask=attention_mask,
+                max_new_tokens=768,
+                do_sample=True,
+                top_p=0.90,
+                temperature=0.9,
+                num_return_sequences=self.amount
+            )
+
+        t3 = time.time()
+        prompt_len = model_inputs.input_ids.shape[1]
+        generated_ids = [output_ids[prompt_len:] for output_ids in generated_full_ids]
+
+        # Token lengths of the generated outputs
+        output_lengths = [len(g_ids) for g_ids in generated_ids]
+
+        # Full sequence token lengths and prompt length
+        full_lengths = [len(full) for full in generated_full_ids]
+
+
+        t4 = time.time()
+        answers = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        t5 = time.time()
+
+        print(
+        f"[get_action timings] message_prep={t1 - t0:.2f}s | "
+        f"template_apply={t2 - t1:.2f}s | "
+        f"generation={t3 - t2:.2f}s | "
+        f"postproc_decode={t5 - t4:.2f}s"
+        )
+        return answers, model_inputs.input_ids, generated_full_ids, generated_ids
+
+
 
     def update_reference_model(self):
         self.reference_model.load_state_dict(self.model.state_dict())
@@ -85,7 +172,7 @@ class GRPO_agent():
 
     def optimise_network(self):
         accumulated_steps = 0
-        num_batches = 2
+        num_batches = 1
         total_loss_history = []
         kl_loss_history = []
         for i in range(num_batches):
@@ -131,6 +218,7 @@ class GRPO_agent():
                 total_loss.backward()
                 
                 accumulated_steps += 1
+                print("Current GPU memory allocated:", torch.cuda.memory_allocated() / 1024**3, "GB")
                 if accumulated_steps % (self.backwards_steps_per_update) == 0:
                     self.optimizer.step()
                     self.scheduler.step()

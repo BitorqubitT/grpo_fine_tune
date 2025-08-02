@@ -13,21 +13,22 @@ from env import env
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
 import pandas as pd
 import time
+import flash_attn
 
 device = "cuda"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-#model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
 AMOUNT_OF_SAMPLES = 4
-AMOUNT_OF_PROMPTS = 2
+AMOUNT_OF_PROMPTS = 1
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
 
 lora_config = LoraConfig(
-    r=16,
-    lora_alpha=64,
-    #target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
+    r=8,
+    lora_alpha=32,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
     lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM",
@@ -37,7 +38,7 @@ base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
     #TODO: Use in cloud build
-    attn_implementation="flash_attention_2",
+    #attn_implementation="flash_attention_2",
     torch_dtype=torch.bfloat16).to(device)
 
 model = get_peft_model(base_model, lora_config)
@@ -47,7 +48,7 @@ reference_base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
     device_map="auto",
     #TODO: Use in cloud build
-    attn_implementation="flash_attention_2",
+    #attn_implementation="flash_attention_2",
     torch_dtype=torch.bfloat16).to(device)
 
 reference_model = get_peft_model(reference_base_model, lora_config)
@@ -58,7 +59,7 @@ df = pd.read_parquet("data/cargo_test_passed_train.parquet")
 dataset = datasets.Dataset.from_pandas(df)
 dataset = dataset.shuffle(seed=1337)
 
-train_dataset = dataset.select(range(500, len(dataset)))
+train_dataset = dataset.select(range(5000, len(dataset)))
 
 train_dataset.save_to_disk("data/train_split")
 
@@ -83,10 +84,8 @@ for k, batch in enumerate(data_loader):
     print("Batch number:", k)
     loop_start = time.time()
     for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
-        t0 = time.time()
         # str answer, prompt id, prompt+answerids, answer_ids
-        action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action(prompt)
-        t1 = time.time()
+        action, prompt_id, generated_full_ids, generated_ids = grpo_agent.get_action_bish(prompt)
         batch_rewards = env.step(action)
         t2 = time.time()
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
@@ -105,9 +104,7 @@ for k, batch in enumerate(data_loader):
             full_input_ids = generated_full_ids[i]
             generated_id = generated_ids[i]
             memory.add_sample(full_input_ids, generated_id, advantages)
-        t4 = time.time()
-        print(f"[TIMING] get_action: {t1 - t0:.2f}s | env.step: {t2 - t1:.2f}s | reward processing: {t3 - t2:.2f}s | add_sample: {t4 - t3:.2f}s")
-    if len(memory.buffer) < 8:
+    if len(memory.buffer) < 4:
         continue
 
     else:
@@ -141,7 +138,6 @@ for k, batch in enumerate(data_loader):
     if k % 1000 == 0:
         print("Saving model")
         grpo_agent.save(str(k))
-
 grpo_agent.save("final")
     
 print(len(skipped_prompts))
