@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from utils import handle_remove_readonly
 
 class env():
 
@@ -48,16 +49,16 @@ class env():
         return format_rewards
 
     def _rust_rewards(self, results):
-        rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'result_output': ''} 
+        rust_tool_reward = {'build': 0, 'clippy': 0, 'test': 0, 'result_outputbuild': '', 'result_outputtest': '', 'result_outputclippy': ''} 
         for tool_name, result in results.items():
             if result.passed:
                 rust_tool_reward[tool_name] = 1
             else:
                 rust_tool_reward[tool_name] = 0
             if result.stderr:
-                rust_tool_reward['result_output'] = result.stderr
+                rust_tool_reward['result_output' + tool_name] = result.stderr
             if result.stdout:
-                rust_tool_reward['result_output'] = result.stdout
+                rust_tool_reward['result_output' + tool_name] = result.stdout
         
         return rust_tool_reward
 
@@ -111,16 +112,17 @@ class env():
                     #logger.warning(f"{tool.name} failed: {result.stderr}")
         finally:
             if project_dir.exists():
-                shutil.rmtree(project_dir)
+                shutil.rmtree(project_dir, onerror=handle_remove_readonly)
         return results
     
     def _extract_rust_code(self, text: str) -> Optional[str]:
         #pattern = r'```rust\n(.*?)\n```'
-        pattern = r'```rust\s*\n(.*?)```'
+        #pattern = r'```rust\s*\r?\n(.*?)```'
+        pattern = r'```rust\s*\r?\n(.*)```'
         match = re.search(pattern, text, re.DOTALL)
         if match:
             return match.group(1)
-        return None
+        return text
 
     def _check_code_not_empty(self, code: str) -> bool:
         if len(code) > 10:
@@ -138,26 +140,8 @@ class env():
         if match:
             return True
         return False
-    
-    def _response_contains_asserts(self, rust_code: str):
-        """
-        Extracts the test module from Rust code, counts assert statements,
-        and checks if they are unique.
-        """
-        test_block_pattern = r'#\[cfg\(test\)\](.*?)```'
-        test_modules = re.findall(test_block_pattern, rust_code, re.DOTALL)
-        if not test_modules:
-            return 0.0
 
-        assert_pattern = r'assert(?:_eq)?\!(.*?);'
-        asserts = re.findall(assert_pattern, test_modules[0], re.DOTALL)
-        num_asserts = len(asserts)
-        num_unique_asserts = len(set(asserts))
-        if num_asserts == 0.0:
-            return 0.0
-        return num_asserts / num_unique_asserts
-
-    def _response_contains_asserts2(self, code: str) -> float:
+    def _response_contains_asserts(self, code: str) -> float:
         pattern = r'#\[cfg\(test\)\]\s*mod\s+tests\s*\{([^}]*)\}'
         match = re.search(pattern, code, re.DOTALL)
 
@@ -192,8 +176,19 @@ class RustTool:
 
     def run(self, project_dir: Path) -> RustToolResult:
         try:
+            #result = subprocess.run(
+            #    ["cargo", self.name, "--quiet"],
+            #    cwd=project_dir,
+            #    capture_output=True,
+            #    text=True,
+            #    timeout=10
+            #)
+
+            target_dir = Path("outputs") / "cargo_target"
+            target_dir = target_dir.resolve()   # ensures absolute path
+
             result = subprocess.run(
-                ["cargo", self.name, "--quiet"],
+                ["cargo", self.name, "--quiet", "--target-dir", str(target_dir)],
                 cwd=project_dir,
                 capture_output=True,
                 text=True,

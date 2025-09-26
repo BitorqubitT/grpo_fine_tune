@@ -7,6 +7,11 @@ from transformers import AutoTokenizer
 from typing import List
 import os
 from torch.cuda.amp import autocast
+import stat
+import shutil
+import time
+import errno
+from collections import deque
 
 def extract_rust_code(text: str) -> Optional[str]:
     pattern = r'```rust\n(.*?)\n```'
@@ -119,12 +124,10 @@ def get_logprobs(model, input_ids: torch.Tensor, actions: torch.Tensor, tokenize
     attention_mask = (input_ids != tokenizer.pad_token_id).long()
     assert input_ids.shape == actions.shape, "input_ids and actions must have the same shape"
     if use_no_grad:
-        #with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        with torch.no_grad(), autocast(dtype=torch.bfloat16):
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
     else:
-        #with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        with autocast(dtype=torch.bfloat16):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
 
     logits = outputs.logits  # [B, S, V]
@@ -145,3 +148,22 @@ def check_loss_logging(average_total_loss):
         return sum(average_total_loss) / len(average_total_loss)
     else:
         return sum(average_total_loss) / 100
+    
+def handle_remove_readonly(func, path, exc):
+    excvalue = exc[1]
+    if func in (os.unlink, os.rmdir) and excvalue.errno == errno.EACCES:
+        os.chmod(path, stat.S_IWRITE)
+        time.sleep(0.3)  # wait for lock release
+        func(path)
+    else:
+        raise
+
+class MovingAverage:
+    def __init__(self, window_size=1000):
+        self.values = deque(maxlen=window_size)
+
+    def update(self, value):
+        self.values.append(value)
+
+    def average(self):
+        return sum(self.values) / len(self.values) if self.values else 0.0

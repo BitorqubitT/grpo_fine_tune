@@ -1,13 +1,13 @@
-import datasets
+import pandas as pd
+import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
-from utils import get_rewards, calc_advantages, process_batch_rewards
+import datasets
+import wandb
+from utils import process_batch_rewards
 from env import env
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
-import pandas as pd
-import wandb
-import numpy as np
+
 # This script is used to run the non-finetuned models on the dataset.
 # This is used as a baseline to compare against the finetuned models.
 
@@ -51,22 +51,25 @@ if __name__ == "__main__":
             'asserts',
             'build',
             'clippy',
-            'test'
+            'test',
+            'output_build',
+            'output_clippy',
+            'output_test'
             ]
 
-    device = "cuda" # the device to load the model onto
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+    device = "cuda"
+    model_name = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype="auto",
-        device_map="auto"
+        device_map="auto",
+        #attn_implementation="flash_attention_2"
     )
-
     test_table = wandb.Table(columns = columns)
 
-    df = pd.read_parquet("data/results_code_and_tests.parquet")
+    df = pd.read_parquet("data/cargo_test_passed_train.parquet")
     dataset = datasets.Dataset.from_pandas(df)
     dataset = dataset.shuffle(seed=1337)
     
@@ -78,13 +81,11 @@ if __name__ == "__main__":
 
     eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
 
-    wandb.init(project = "llm finetune eval 344512",
-        name = f"eval set non-finetuned 3445123",
+    wandb.init(project = "llm non-finetuned eval qwen code 1.5b-v6",
+        name = f"eval set non-finetuned qwen code 1.5b-v6",
         config = {
-                "gamma": 5,
                 })
 
-    print(len(eval_dataset))
     env = env(CARGO_TOML_FILE, template_rs_file)
 
     for k, batch in enumerate(eval_loader):
@@ -92,8 +93,10 @@ if __name__ == "__main__":
         action = get_answer(prompt, SYSTEM_PROMPT, tokenizer, model, amount=1, device=device)
         batch_rewards = env.step(action)
         table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
-
         for row in table_rows:
+            row.append(batch_rewards[0]["result_outputbuild"])
+            row.append(batch_rewards[0]["result_outputclippy"])
+            row.append(batch_rewards[0]["result_outputtest"])
             test_table.add_data(*row)
             wandb.log({"total_reward": np.mean(total_rewards)})
 
