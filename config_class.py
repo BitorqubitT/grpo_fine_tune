@@ -4,7 +4,7 @@ from peft import LoraConfig
 # --- Sub-configs ---
 @dataclass
 class OptimizerConfig:
-    learning_rate: float = 5e-5
+    learning_rate: float = 5e-6
     betas_0: float = 0.9
     betas_1: float = 0.99
     weight_decay: float = 0.1
@@ -12,7 +12,7 @@ class OptimizerConfig:
 @dataclass
 class SchedulerConfig:
     scheduler: str = "COSINE"
-    warmup_steps: int = 750
+    warmup_steps: int = 1500
     total_training_steps: int = 15000
     backwards_steps_per_update: int = 4
 
@@ -34,11 +34,11 @@ class InferenceConfig:
 @dataclass
 class LoRAConfig:
     lora_dropout: float = 0.05
-    r: int = 8
-    lora_alpha: int = 32
+    r: int = 16
+    lora_alpha: int = 64
     target_modules="all-linear"
     #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
-    target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
+    #target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
     def create_lora_config(self):
@@ -56,7 +56,7 @@ class LoRAConfig:
 @dataclass
 class TrainingConfig:
     device: str = "cuda"
-    model_name: str = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     data_path: str = "data/cargo_test_passed_train.parquet"
     train_split_path: str = "data/train_split"
     #data_path = "data/cargo_test_passed_train.parquet"
@@ -64,8 +64,8 @@ class TrainingConfig:
     # Experiment setup
     amount_of_samples: int = 4
     amount_of_prompts: int = 1
-    wandb_project: str = "llm_finetune"
-    wandb_run_name: str = "experiment_91232"
+    wandb_project: str = "llm_finetune_runpod"
+    wandb_run_name: str = "experiment_cloud_1"
     
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
