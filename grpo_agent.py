@@ -14,6 +14,7 @@ class GRPO_agent():
         #TODO: Use on linux
         #self.model = torch.compile(model)
         self.model = model
+        self.inference_model = None
         self.reference_model = reference_model.eval()
         self.memory = memory
         self.chat_template = chat_template
@@ -41,6 +42,11 @@ class GRPO_agent():
         )
         self.backwards_steps_per_update = cfg.scheduler.backwards_steps_per_update
 
+    def update_inference_model(self):
+        model_copy = copy.deepcopy(self.model)
+        merged = model_copy.merge_and_unload()
+        self.inference_model = merged.eval().to(self.device)
+
     def get_action(self, prompt) -> tuple:
         """
         answers:  human-readable text (useful for logging or reward computation)
@@ -49,12 +55,11 @@ class GRPO_agent():
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
         # Deep copy (to keep training model intact)
-        model_for_inference = copy.deepcopy(self.model)
+        #model_for_inference = copy.deepcopy(self.model)
 
         # Merge LoRA weights into base model
-        model_for_inference = model_for_inference.merge_and_unload()
-        model = model_for_inference.eval()  # important for dropout etc.
-        #model = torch.compile(model_for_inference)
+        #model_for_inference = model_for_inference.merge_and_unload()
+        #model = model_for_inference.eval()  # important for dropout etc.
 
         messages = [
             {"role": "system", "content": self.chat_template},
@@ -71,7 +76,7 @@ class GRPO_agent():
         #attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
 
         with torch.inference_mode():
-            generated_full_ids = model.generate(
+            generated_full_ids = self.inference_model.generate(
                 **model_inputs,
                 #model_inputs.input_ids,
                 #attention_mask=attention_mask,

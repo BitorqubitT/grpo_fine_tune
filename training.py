@@ -17,7 +17,7 @@ from utils import (
 )
 from env import env as environment
 from templates import SYSTEM_PROMPT, template_rs_file, CARGO_TOML_FILE
-from config_class import TrainingConfig
+from config_class_copy import TrainingConfig
 
 def load_tokenizer(model_name: str):
     return AutoTokenizer.from_pretrained(model_name, extra_vocab_file="qwen_extra.tiktoken")
@@ -29,18 +29,6 @@ def load_model(model_name: str, lora_config: LoraConfig, device):
         #attn_implementation="flash_attention_2",
     ).to(device)
     return get_peft_model(base_model, lora_config)
-
-#def get_lora_config(r, alpha, dropout):
-#    return LoraConfig(
-#        r=r,
-#        lora_alpha=alpha,
-#        #target_modules="all-linear",
-#        #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
-#        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-#        lora_dropout=dropout,
-#        bias="none",
-#        task_type="CAUSAL_LM",
-#    )
 
 def load_dataset(path: str, location: str):
     df = pd.read_parquet(path)
@@ -78,15 +66,20 @@ def train():
     ma_rewards = MovingAverage(1000)
     ma_loss = MovingAverage(1000)
 
+    grpo_agent.update_inference_model()
+    
     for k, batch in enumerate(data_loader):
         print("Batch number:", k)
         for prompt, task_id in zip(batch["rust_prompt"], batch["task_id"]):
             # str answer, prompt id, prompt+answerids, answer_ids
             if len(prompt) > 5000:
                 continue
-
+            
+            t0 = time.time()
             action, prompt_id, full_ids, generated_ids = grpo_agent.get_action(prompt)
+            t1 = time.time()
             batch_rewards = env.step(action)
+            t2 = time.time()
             table_rows, total_rewards = process_batch_rewards(batch_rewards, prompt, action)
 
            #TODO: Logical to skip similar advantages? 
@@ -96,6 +89,7 @@ def train():
                 continue
 
             print(f"Prompt ID: {task_id}, total_rewards: {total_rewards}, advantages: {advantages}")
+            print(f"Timings -> get_action: {t1 - t0:.4f}s | env.step: {t2 - t1:.4f}s | reward_processing: {t2 - t1:.4f}s")
 
             for i in range(cfg.amount_of_samples): # sample size
                 memory.add_sample(full_ids[i], generated_ids[i], advantages)
@@ -104,7 +98,12 @@ def train():
             continue
 
         updates += 1
+        t3 = time.time()
         logging = grpo_agent.optimise_network()
+
+        t4 = time.time()
+
+        print(f"Timings -> optimise_network: {t4 - t3:.4f}s | total iteration: {t4 - t0:.4f}s\n")
 
         # Update averages
         avg_build = sum(row[7] for row in table_rows) / cfg.amount_of_samples
@@ -136,7 +135,7 @@ def train():
             "moving loss average": ma_loss.average(),
         })
     
-        if updates == 2000:
+        if updates == 1000:
             print("Updating reference model")
             grpo_agent.update_reference_model()
             updates = 0

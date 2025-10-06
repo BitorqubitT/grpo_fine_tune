@@ -37,7 +37,7 @@ class LoRAConfig:
     r: int = 16
     lora_alpha: int = 64
     #target_modules= ["all-linear"]
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"],
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
     #target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
