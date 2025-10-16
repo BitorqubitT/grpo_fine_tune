@@ -4,7 +4,7 @@ from peft import LoraConfig
 # --- Sub-configs ---
 @dataclass
 class OptimizerConfig:
-    learning_rate: float = 5e-6
+    learning_rate: float = 1e-5
     betas_0: float = 0.9
     betas_1: float = 0.99
     weight_decay: float = 0.1
@@ -64,8 +64,8 @@ class TrainingConfig:
     # Experiment setup
     amount_of_samples: int = 4
     amount_of_prompts: int = 1
-    wandb_project: str = "llm_finetune_runpod"
-    wandb_run_name: str = "experiment_cloud_1"
+    wandb_project: str = "llm_finetune_runpod_high_lr"
+    wandb_run_name: str = "experiment_cloud_1_high_lr"
     
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
