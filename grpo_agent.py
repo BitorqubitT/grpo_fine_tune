@@ -4,15 +4,11 @@ from utils import get_logprobs
 import gc
 from collections import deque
 from transformers import get_cosine_schedule_with_warmup
-import time
 import copy
-from peft import PeftModel
 
 class GRPO_agent():
 
     def __init__(self, model, reference_model, tokenizer, chat_template: str, cfg, memory=None):
-        #TODO: Use on linux
-        #self.model = torch.compile(model)
         self.model = model
         self.inference_model = None
         self.reference_model = reference_model.eval()
@@ -36,9 +32,8 @@ class GRPO_agent():
         #Then cosine decay for the remaining steps, smoothly going toward 0
         self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer,
-            num_warmup_steps= cfg.scheduler.warmup_steps,  # Adjust as needed
-            #TODO: calculate the real steps
-            num_training_steps= cfg.scheduler.total_training_steps  # Adjust as needed
+            num_warmup_steps= cfg.scheduler.warmup_steps,
+            num_training_steps= cfg.scheduler.total_training_steps
         )
         self.backwards_steps_per_update = cfg.scheduler.backwards_steps_per_update
 
@@ -54,12 +49,6 @@ class GRPO_agent():
         generated_ids: what the model did aka answer
         generated_full_ids: full sequence, useful for recovering the original generation context
         """
-        # Deep copy (to keep training model intact)
-        #model_for_inference = copy.deepcopy(self.model)
-
-        # Merge LoRA weights into base model
-        #model_for_inference = model_for_inference.merge_and_unload()
-        #model = model_for_inference.eval()  # important for dropout etc.
 
         messages = [
             {"role": "system", "content": self.chat_template},
@@ -73,7 +62,6 @@ class GRPO_agent():
         )
 
         model_inputs = self.tokenizer([text], return_tensors="pt", padding=True).to(self.device)
-        #attention_mask = (model_inputs.input_ids != self.tokenizer.pad_token_id).long()
 
         with torch.inference_mode():
             generated_full_ids = self.inference_model.generate(
@@ -115,9 +103,9 @@ class GRPO_agent():
         torch.cuda.reset_peak_memory_stats(device=self.model.device)
         for i in range(num_batches):
             input_ids, actions, advantages = self.memory.get_value_per_batch(i)
-            # TODO: SHOULD THIS BE REFERENCE MODEL?
             with torch.no_grad():
                 old_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, use_no_grad=True)
+
             # WATCH the shapes when we use different batching sizes.
             advantages = advantages[0].view(-1, 1)
             action_mask = (actions != -100).float()
@@ -128,22 +116,17 @@ class GRPO_agent():
             for _ in range(4):
                 new_logprobs = get_logprobs(self.model, input_ids, actions, self.tokenizer, use_no_grad = False)
                 ratio = torch.exp(new_logprobs - old_logprobs)
-                # PPO-style clipped loss
                 clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
                 loss_unclipped = ratio * advantages
                 loss_clipped = clipped_ratio * advantages
                 per_token_loss = -torch.min(loss_unclipped, loss_clipped)  # [B, S]
 
-                #policy_loss = per_token_loss.sum(dim=1).mean()
                 policy_loss = (per_token_loss.sum(dim=1) / action_mask.sum(dim=1)).mean()
                 with torch.no_grad():
-                    #ref_logprobs = get_logprobs(self.reference_model, input_ids, actions, self.tokenizer, False)
-                    #TODO: Is this correct?
                     ref_logprobs = old_logprobs
 
                 kl_div = new_logprobs - ref_logprobs
                 kl_loss = torch.mean(kl_div)
-                #kl_loss = (old_logprobs.exp() * (old_logprobs - new_logprobs)).mean()
                 total_loss = policy_loss + self.kl_coef * kl_loss
                 total_loss = total_loss / self.backwards_steps_per_update
                 
@@ -158,7 +141,6 @@ class GRPO_agent():
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
-                    # Logging total and kl loss like this is useless.
                     mean_policy_loss = sum(total_loss_history) / len(total_loss_history)
                     mean_kl_loss = sum(kl_loss_history) / len(kl_loss_history)
                     logging_metrics = [total_loss.float().item(),
@@ -169,7 +151,6 @@ class GRPO_agent():
 
                     del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss
                     del kl_div, kl_loss, per_token_loss, loss_unclipped, loss_clipped
-                    #del new_logprobs, ratio, clipped_ratio, policy_loss, total_loss, ref_logprobs, kl_div, kl_loss, per_token_loss
                     gc.collect()
                     torch.cuda.empty_cache()
 

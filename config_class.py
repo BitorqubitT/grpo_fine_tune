@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from peft import LoraConfig
 
-# --- Sub-configs ---
 @dataclass
 class OptimizerConfig:
     learning_rate: float = 5e-6
@@ -36,7 +35,6 @@ class LoRAConfig:
     lora_dropout: float = 0.05
     r: int = 16
     lora_alpha: int = 64
-    #target_modules= ["all-linear"]
     #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
     target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
     bias: str = "none"
@@ -45,7 +43,6 @@ class LoRAConfig:
         return LoraConfig(
                 r=self.r,
                 lora_alpha=self.lora_alpha,
-                #TODO: Maybe wrap in list?
                 target_modules=list(self.target_modules),
                 lora_dropout=self.lora_dropout,
                 bias= self.bias,
@@ -59,9 +56,7 @@ class TrainingConfig:
     model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     data_path: str = "data/cargo_test_passed_train.parquet"
     train_split_path: str = "data/train_split"
-    #data_path = "data/cargo_test_passed_train.parquet"
 
-    # Experiment setup
     amount_of_samples: int = 4
     amount_of_prompts: int = 1
     wandb_project: str = "llm_finetune_runpod_low_lr"
