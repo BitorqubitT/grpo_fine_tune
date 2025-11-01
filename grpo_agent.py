@@ -104,7 +104,8 @@ class GRPO_agent():
         return avg_loss
 
     def save(self, iteration: str):
-        torch.save(self.model.state_dict(), "saved_models/grpo_" + iteration + ".pth")
+        #torch.save(self.model.state_dict(), "saved_models/grpo_" + iteration + ".pth")
+        torch.save(self.model.state_dict(), "saved_models/grpo_rust.pth")
 
     def optimise_network(self):
         accumulated_steps = 0

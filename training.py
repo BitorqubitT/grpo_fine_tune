@@ -8,6 +8,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model
+from huggingface_hub import HfApi, HfFolder
 
 from grpo_agent import GRPO_agent
 from memory import Memory
@@ -135,10 +136,12 @@ def train():
             "moving loss average": ma_loss.average(),
         })
     
-        if updates == 1000:
-            print("Updating reference model")
-            grpo_agent.update_reference_model()
-            updates = 0
+
+        # Lets not update for now
+        #if updates == 1000:
+        #    print("Updating reference model")
+        #    grpo_agent.update_reference_model()
+        #    updates = 0
 
         memory.clear()
 
@@ -146,12 +149,27 @@ def train():
             print("Saving model")
             grpo_agent.save(str(k))
 
+            # === Configuration ===
+            repo_id = "gomlll/runpod"
+            file_path = "saved_models/grpo_rust.pth"
+            commit_message = "Add new iteration"
+            path_in_repo = "data/grpo_" + str(k) +  ".pth"
+            token = HfFolder.get_token()
+            api = HfApi()
+            api.upload_file(
+                path_or_fileobj=file_path,
+                repo_id=repo_id,
+                repo_type="model",
+                path_in_repo=path_in_repo,
+                commit_message=commit_message,
+                token=token
+            )
+
+            print(f"Successfully uploaded {file_path} to the Huggingface.")
+
     grpo_agent.save("final")
     print(len(skipped_prompts))
     wandb.finish()
-
-    #TODO: Write the whole config to csv file
-
 
 if __name__ == "__main__":
     train()

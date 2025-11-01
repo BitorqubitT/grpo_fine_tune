@@ -4,7 +4,7 @@ from peft import LoraConfig
 # --- Sub-configs ---
 @dataclass
 class OptimizerConfig:
-    learning_rate: float = 1e-5
+    learning_rate: float = 5e-6
     betas_0: float = 0.9
     betas_1: float = 0.99
     weight_decay: float = 0.1
@@ -12,7 +12,7 @@ class OptimizerConfig:
 @dataclass
 class SchedulerConfig:
     scheduler: str = "COSINE"
-    warmup_steps: int = 1500
+    warmup_steps: int = 1000
     total_training_steps: int = 15000
     backwards_steps_per_update: int = 4
 
@@ -37,8 +37,8 @@ class LoRAConfig:
     r: int = 16
     lora_alpha: int = 64
     #target_modules= ["all-linear"]
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
-    #target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
+    #target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj", "gate_proj"]
+    target_modules = ("q_proj", "k_proj", "v_proj", "o_proj")
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
     def create_lora_config(self):
@@ -64,8 +64,8 @@ class TrainingConfig:
     # Experiment setup
     amount_of_samples: int = 4
     amount_of_prompts: int = 1
-    wandb_project: str = "llm_finetune_runpod_high_lr"
-    wandb_run_name: str = "experiment_cloud_1_high_lr"
+    wandb_project: str = "llm_finetune_runpod_low_lr"
+    wandb_run_name: str = "experiment_cloud_1_low_lr"
     
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
