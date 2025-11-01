@@ -87,6 +87,7 @@ While the current implementation effectively utilizes a single H100 GPU, potenti
 
 - This project builds upon the Qwen2.5-Coder-1.5B-Instruct model
 - Implementation inspired by DeepSeek's GRPO approach and PPO papers
+- Oxen ai for the dataset
 
 ## License
 
